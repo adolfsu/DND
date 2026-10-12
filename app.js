@@ -498,6 +498,17 @@ function fmtTime(ts) {
   const p = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
+/* 触发一次本地文件下载：导出存档 / 角色卡 / 模组 / 全量数据都用它 */
+function download(filename, content, mime) {
+  try {
+    const blob = new Blob([content], { type: (mime || 'application/json') + ';charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  } catch (e) { toast('导出失败：' + e.message, 'err'); }
+}
 
 /* ─────────────── 3. 状态与存储 ─────────────── */
 
@@ -532,6 +543,7 @@ let state = {
 function persist() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
   catch (e) { toast('本地存储写入失败：' + e.message, 'err'); }
+  try { netSyncMyChar(); } catch (_) {}
 }
 function restore() {
   try {
@@ -717,6 +729,7 @@ const TITLES = {
   codex: ['角色档案', '每一位冒险者都始于一张纸和一串数字'],
   saves: ['记忆回廊', '已发生的，被记录；未发生的，仍可改写'],
   novel: ['吟游诗篇', '把骰点记录唱成一首歌'],
+  online:['联机远征', '一位主持台，一群冒险者，同一场故事'],
   manual:['地下城主手册', '规则速查 · 骰子语法 · 与 AI 相处之道'],
   settings:['设置中心', 'AELDRIN / CONTROL NODE']
 };
@@ -731,6 +744,7 @@ function setView(v) {
   if (v === 'home') renderHome();
   if (v === 'prep') renderPrep();
   if (v === 'table') renderTable();
+  if (v === 'online') renderOnline();
   if (v === 'codex') renderCodex();
   if (v === 'saves') renderSaves();
   if (v === 'novel') renderNovel();
@@ -891,7 +905,7 @@ function msgHTML(m, idx) {
   }
   const markers = (state.settings.markerOn && m.markers && m.markers.length)
     ? `<div class="mk-row">${m.markers.map((k, j) => mkHTML(m, idx, j, k)).join('')}</div>` : '';
-  const retry = idx === state.chat.length - 1
+  const retry = (idx === state.chat.length - 1 && !(NET.on && NET.role === 'player'))
     ? `<div class="mk-row"><button class="mk" onclick="regenerate_()">↻ 让 DM 重新叙述这一段</button></div>` : '';
   return `<div class="msg dm"><div class="who">🜂 地下城主 · DM</div><div class="body">${fmtText(m.text)}</div>${markers}${retry}</div>`;
 }
@@ -924,6 +938,7 @@ window.applyMarker_ = (mi, j) => {
   else if (k.type === 'xp') { gainXp(c, k.val); }
   else if (k.type === 'gold') { c.gold = Math.max(0, (c.gold || 0) + k.val); addSys(`${c.name} 金币 ${k.val >= 0 ? '+' : ''}${k.val}（现 ${c.gold}）`); }
   m.mkDone[j] = true;
+  if (NET.on) netSend(NET.role === 'host' ? 'h' : 'c', 'mkdone', { msgId: m.id, j });
   // 自动重绘（保留滚动）
   const log = $('#chat-log'); const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 120;
   renderChat(); if (!atBottom) log.scrollTop = log.scrollHeight - 200;
@@ -945,9 +960,9 @@ function gainXp(c, n) {
   }
 }
 
-function addSys(text) { state.chat.push({ role:'sys', text, ts: Date.now() }); }
+function addSys(text) { const m = { id: uid(), role:'sys', text, ts: Date.now() }; state.chat.push(m); netPushLocal(m); return m; }
 
-function pushMsg(m) { state.chat.push(m); renderChat(); }
+function pushMsg(m) { if (!m.id) m.id = uid(); state.chat.push(m); renderChat(); netPushLocal(m); return m; }
 
 /* 侧栏：队员 */
 function renderPartySide() {
@@ -1181,7 +1196,9 @@ function sendChat() {
   // 纯骰子表达式
   if (/^[0-9]*d[0-9]+([+-]\d+)?([a-z]{2}\d+)?$/i.test(raw.replace(/\s/g, ''))) { doRoll(raw, '', '快速投掷'); return; }
   const c = activeChar();
-  pushMsg({ role:'player', name: c ? c.name : '你', text: raw, ts: Date.now() });
+  pushMsg({ role:'player', name: c ? c.name : '你', text: raw, charId: c ? c.id : null, ts: Date.now() });
+  // 玩家端只把行动上报给主持台，由主持台统一驱动 AI 地下城主
+  if (NET.on && NET.role === 'player') return;
   askDM();
 }
 
@@ -1333,6 +1350,7 @@ async function askDM() {
       full = acc;
       holder.querySelector('.body').innerHTML = fmtText(acc) || '<span class="typing"><i></i><i></i><i></i></span>';
       log.scrollTop = log.scrollHeight;
+      netStreamLocal(acc, false);
     });
   } catch (e) {
     holder.remove();
@@ -1343,9 +1361,10 @@ async function askDM() {
   }
   holder.remove();
   $('#btn-send').disabled = false;
+  netStreamLocal('', true);
 
   const { text, markers } = parseMarkers(full);
-  state.chat.push({ role:'dm', text: (text || full).trim(), markers, ts: Date.now() });
+  pushMsg({ role:'dm', text: (text || full).trim(), markers, ts: Date.now() });
   renderChat(); renderQuick();
   if (state.settings.autoSave) saveSession(true);
   persist();
@@ -1737,7 +1756,12 @@ function wizOpen(id) {
   if (!src) wizAutoAssign(true);
   wizRender();
 }
-window.editChar_ = wizOpen;
+window.editChar_ = id => {
+  if (NET.on && NET.role === 'player' && id && id !== NET.charId) {
+    toast('联机中只能修改自己的角色卡', 'err'); return;
+  }
+  wizOpen(id);
+};
 
 /* ── 技能来源计算 ── */
 function wizLockedSkills(d) {
@@ -2339,6 +2363,11 @@ function bind() {
     location.reload();
   });
 
+  // 联机
+  $('#btn-net-host').addEventListener('click', () => netHost_($('#net-roomname').value.trim()));
+  $('#btn-net-join').addEventListener('click', () => netJoin_($('#net-code').value));
+  $('#net-code').addEventListener('keydown', e => { if (e.key === 'Enter') netJoin_($('#net-code').value); });
+
   // 键盘
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') { closeModal(); closeDrawers(); }
@@ -2430,6 +2459,7 @@ window.saveNewModule_ = () => {
 };
 
 function launchSession() {
+  if (NET.on && NET.role === 'player') { toast('联机中由主持台开启远征', 'err'); return; }
   if (!state.partyIds.length && !confirm('队伍里还没有角色，仍要开始吗？（DM 会把你当成无名冒险者）')) return;
   state.combat = { on: false, round: 1, order: [], turn: 0 };
   state.activeCharId = state.activeCharId || state.partyIds[0] || null;
@@ -2481,7 +2511,7 @@ window.startCombat_ = () => {
   (state.combat.enemies || []).forEach(e => order.push(e));
   order.sort((a,b) => b.init - a.init);
   state.combat = { on:true, round:1, order, turn:0, enemies: state.combat.enemies || [] };
-  persist(); closeModal(); renderCombat(); renderTable();
+  persist(); closeModal(); renderCombat(); renderTable(); netPushCombat();
   addSys('⚔️ 战斗开始 · 先攻顺序：' + order.map(o => `${o.name}(${o.init})`).join(' → '));
   renderChat();
   toast('先攻已排定');
@@ -2499,20 +2529,20 @@ window.addEnemy_ = () => {
     state.combat.enemies.push(e);
     if (state.combat.on) { state.combat.order.push(e); state.combat.order.sort((a,b)=>b.init-a.init); }
   }
-  persist(); closeModal(); renderCombat(); renderTable();
+  persist(); closeModal(); renderCombat(); renderTable(); netPushCombat();
   toast('已加入 ' + n + ' 个敌人');
 };
 window.nextTurn_ = () => {
   const cb = state.combat; if (!cb.on) return;
   cb.turn++;
   if (cb.turn >= cb.order.length) { cb.turn = 0; cb.round++; addSys(`— 第 ${cb.round} 轮 —`); }
-  persist(); closeModal(); renderCombat(); renderTable();
+  persist(); closeModal(); renderCombat(); renderTable(); netPushCombat();
   const cur = cb.order[cb.turn];
   if (cur) toast('轮到 ' + cur.name);
 };
 window.endCombat_ = () => {
   state.combat = { on:false, round:1, order:[], turn:0, enemies: state.combat.enemies || [] };
-  persist(); closeModal(); renderCombat(); renderTable();
+  persist(); closeModal(); renderCombat(); renderTable(); netPushCombat();
   addSys('战斗结束'); renderChat();
 };
 
@@ -2531,6 +2561,660 @@ window.loadForNovel_ = id => {
   persist(); closeModal(); setView('novel');
   toast('已载入日志，点击「开始创作」');
 };
+
+/* ══════════════════════════════════════════════════════════════
+   23. 联机 · 极简 MQTT over WebSocket 客户端
+
+   公共中转只需要「连上 → 订阅 → 发布 → 心跳」四件事，因此这里
+   手写一个约 200 行的 MQTT 3.1.1 客户端，不引入任何第三方脚本：
+   页面依然可以完全离线打开，只有开启联机时才需要网络。
+   多个中转节点按顺序自动尝试，掉线后自动重连并补齐订阅。
+   ══════════════════════════════════════════════════════════════ */
+
+const MQTT_BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt'
+];
+const MQ_PING = new Uint8Array([0xc0, 0x00]);
+
+function mqVarint(n) {
+  const o = [];
+  do { let b = n % 128; n = Math.floor(n / 128); if (n > 0) b |= 0x80; o.push(b); } while (n > 0);
+  return o;
+}
+function mqStr(s) {
+  const b = new TextEncoder().encode(s);
+  return [b.length >> 8, b.length & 255, ...b];
+}
+function mqPacket(type, flags, body) {
+  return new Uint8Array([(type << 4) | flags, ...mqVarint(body.length), ...body]);
+}
+
+function createMiniMqtt(url, cb) {
+  const S = { ws: null, buf: new Uint8Array(0), ready: false, closing: false, keep: null, tries: 0, suback: 0, pub: 0 };
+  const topics = new Set();
+  let pid = 1;
+  const cid = 'aldr_' + Math.random().toString(36).slice(2, 12);
+
+  const send = bytes => {
+    if (S.ws && S.ws.readyState === 1) { try { S.ws.send(bytes); } catch (_) {} }
+  };
+
+  function parse() {
+    let i = 0;
+    while (i < S.buf.length) {
+      let mul = 1, len = 0, p = i + 1, done = false;
+      while (p < S.buf.length && mul <= 128 * 128 * 128) {
+        const b = S.buf[p++]; len += (b & 127) * mul; mul *= 128;
+        if (!(b & 128)) { done = true; break; }
+      }
+      if (!done || p + len > S.buf.length) break;
+      onPacket(S.buf[i] >> 4, S.buf.subarray(p, p + len));
+      i = p + len;
+    }
+    S.buf = i >= S.buf.length ? new Uint8Array(0) : S.buf.slice(i);
+  }
+
+  function onPacket(type, pkt) {
+    if (type === 2) {                                   // CONNACK
+      if (pkt[1] === 0) {
+        S.ready = true; S.tries = 0;
+        for (const t of topics) doSub(t);
+        clearInterval(S.keep);
+        S.keep = setInterval(() => send(MQ_PING), 35000);
+        cb.onReady && cb.onReady();
+      } else {
+        cb.onFail && cb.onFail('中转拒绝连接（返回码 ' + pkt[1] + '）');
+      }
+    } else if (type === 3) {                            // PUBLISH (QoS 0)
+      const tl = (pkt[0] << 8) | pkt[1];
+      const topic = new TextDecoder().decode(pkt.subarray(2, 2 + tl));
+      const payload = new TextDecoder().decode(pkt.subarray(2 + tl));
+      cb.onMessage && cb.onMessage(topic, payload);
+    } else if (type === 9) {                            // SUBACK
+      S.suback++; cb.onSubAck && cb.onSubAck();
+    } else if (type === 13) {                           // PINGRESP
+      cb.onPong && cb.onPong();
+    }
+  }
+
+  function doSub(topic) {
+    send(mqPacket(8, 2, [pid >> 8, pid & 255, ...mqStr(topic), 0x00]));
+    pid = (pid % 65535) + 1;
+  }
+
+  function open() {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = e => { if (!settled) { settled = true; reject(e); } };
+      let ws;
+      try { ws = new WebSocket(url, 'mqtt'); }
+      catch (e) { return fail(e); }
+      ws.binaryType = 'arraybuffer';
+      S.ws = ws;
+      const to = setTimeout(() => { try { ws.close(); } catch (_) {} fail(new Error('握手超时')); }, 12000);
+      ws.onopen = () => send(mqPacket(1, 0, [0, 4, 0x4d, 0x51, 0x54, 0x54, 4, 2, 0, 60, ...mqStr(cid)]));
+      ws.onmessage = ev => { S.buf = new Uint8Array([...S.buf, ...new Uint8Array(ev.data)]); parse(); };
+      ws.onerror = () => {};
+      ws.onclose = () => {
+        clearTimeout(to); clearInterval(S.keep);
+        const wasReady = S.ready; S.ready = false;
+        if (!settled) { settled = true; fail(new Error('中转节点无法连接')); }
+        else if (wasReady && !S.closing) cb.onClose && cb.onClose();
+      };
+      const wait = setInterval(() => {
+        if (S.ready) { clearInterval(wait); clearTimeout(to); if (!settled) { settled = true; resolve(); } }
+      }, 60);
+      setTimeout(() => clearInterval(wait), 13000);
+    });
+  }
+
+  return {
+    get ready() { return S.ready; },
+    get stat() { return { ready: S.ready, suback: S.suback, pub: S.pub }; },
+    connect: open,
+    subscribe(topic) { topics.add(topic); if (S.ready) doSub(topic); },
+    publish(topic, text) { S.pub++; send(mqPacket(3, 0, [...mqStr(topic), ...new TextEncoder().encode(text)])); },
+    close() { S.closing = true; clearInterval(S.keep); try { send(new Uint8Array([0xe0, 0x00])); S.ws && S.ws.close(); } catch (_) {} }
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════
+   24. 联机 · 房间 / 加密 / 协议
+
+   拓扑：一人「主持台」（权威方，持有 AI 与剧情状态）+ 若干「玩家」。
+   中转只是一根哑管道，所有人都通过它收发；房间码即密钥种子，
+   报文用 AES-GCM 端到端加密，公共中转上看不到任何明文。
+   ══════════════════════════════════════════════════════════════ */
+
+const NET_CODE_CHARS = 'ACDEFGHJKLMNPQRTUVWXY34679';
+
+const NET = {
+  on: false, role: null,             // 'host' | 'player'
+  room: '', base: '', myId: '', myName: '', charId: null,
+  hostId: '', hostName: '',
+  mq: null, key: null, secure: false,
+  status: 'off',                    // off | connecting | online | error
+  link: '',                         // 当前中转节点
+  rtt: 0, lastPong: 0, lastBeat: 0,
+  peers: {},                        // host 侧：peerId -> {id,name,charId,seen}
+  roster: [],                       // 全端一致的参与者名单
+  lastCharSnap: '', queue: Promise.resolve(),
+  stat: { rx: 0, rxBad: 0, tx: 0 },
+  startedAt: 0, err: ''
+};
+
+function netNewCode() {
+  let s = '';
+  const a = crypto.getRandomValues(new Uint8Array(6));
+  for (let i = 0; i < 6; i++) s += NET_CODE_CHARS[a[i] % NET_CODE_CHARS.length];
+  return s;
+}
+function netHash(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}
+function netBase(room) { return 'aldr2t1/' + netHash(room.toUpperCase()); }
+function netTopic(kind) { return NET.base + '/' + kind; }
+
+function netB64(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function netUnb64(str) {
+  const bin = atob(str), out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function netDeriveKey(room) {
+  if (!(window.crypto && crypto.subtle)) return null;
+  const enc = new TextEncoder();
+  const base = await crypto.subtle.importKey('raw', enc.encode('aeldrin-table-e2e-v1'), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: enc.encode('aldr|' + room.toUpperCase()), iterations: 50000, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+  );
+}
+
+async function netSeal(obj) {
+  const json = JSON.stringify(obj);
+  if (!NET.key) return 'P:' + json;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, NET.key, new TextEncoder().encode(json));
+  return 'E:' + netB64(iv) + ':' + netB64(new Uint8Array(ct));
+}
+async function netOpen(text) {
+  if (typeof text !== 'string' || !text) return null;
+  if (text.charCodeAt(0) === 80) return JSON.parse(text.slice(2));   // 'P:'
+  const p = text.split(':');
+  if (p.length !== 3) return null;
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: netUnb64(p[1]) }, NET.key, netUnb64(p[2]));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
+/* 统一出口：串行化，保证发送顺序；一条发不出去不影响后续 */
+function netSend(kind, type, data, to) {
+  if (!NET.on || !NET.mq) return;
+  NET.stat.tx++;
+  NET.queue = NET.queue.then(async () => {
+    try {
+      const sealed = await netSeal({ f: NET.myId, to: to || 'all', t: type, d: data, n: uid(), ts: Date.now() });
+      NET.mq.publish(netTopic(kind), sealed);
+    } catch (e) { console.warn('net send failed', e); }
+  });
+  return NET.queue;
+}
+const netToHost   = (type, data) => netSend('c', type, data);
+const netToClient = (type, data, to) => netSend('h', type, data, to);
+const netBroadcast = (type, data) => netSend('h', type, data, 'all');
+
+function netStatus(text, kind) {
+  NET.status = kind || NET.status;
+  const el = $('#net-status');
+  if (el) { el.className = 'net-status ' + (kind || ''); el.innerHTML = text; }
+  const badge = $('#net-badge');
+  if (badge) {
+    badge.style.display = NET.on ? '' : 'none';
+    badge.className = 'net-badge ' + (kind === 'err' ? 'bad' : '');
+    badge.textContent = NET.on ? (NET.role === 'host' ? '🜂 主持中' : '🎲 已加入') : '';
+  }
+  const tb = $('#tb-actions');
+  if (tb) renderTopNet();
+}
+
+function netInfo() {
+  const role = NET.role === 'host' ? '主持台' : '玩家';
+  const rtt = NET.rtt ? ` · ${NET.rtt}ms` : '';
+  return `${NET.secure ? '🔒 已加密' : '⚠️ 未加密'} · ${role} · 房间 ${NET.room}${rtt} · 收发 ${NET.stat.tx}/${NET.stat.rx}`;
+}
+
+/* ── 建立 / 断开连接 ── */
+
+async function netConnect() {
+  NET.secure = !!(window.crypto && crypto.subtle);
+  if (NET.secure) NET.key = await netDeriveKey(NET.room);
+  let lastErr = null;
+  for (const url of MQTT_BROKERS) {
+    netStatus('正在连接中转节点 ' + url.replace(/^wss:\/\//, '').replace(/\/.*$/, '') + ' …', 'wait');
+    try {
+      const mq = createMiniMqtt(url, {
+        onMessage: netIncoming,
+        onReady: () => { NET.link = url; netStatus('已连接 · ' + netInfo(), 'ok'); netOnReady(); },
+        onClose: () => { netStatus('连接中断，正在重连…', 'wait'); setTimeout(() => { try { mq.connect(); } catch (_) {} }, 1500); },
+        onFail: msg => { lastErr = new Error(msg); }
+      });
+      NET.mq = mq;                     // 必须先挂上：CONNACK 触发 onReady 时就要能收发
+      await mq.connect();
+      mq.subscribe(netTopic(NET.role === 'host' ? 'c' : 'h'));
+      return true;
+    } catch (e) { lastErr = e; NET.mq = null; }
+  }
+  netStatus('所有中转节点都无法连接' + (lastErr ? '：' + lastErr.message : '') + '<br><span class="hint">可能是网络限制。请检查网络后重试，或更换 Wi-Fi / 改用手机热点。</span>', 'err');
+  NET.status = 'error';
+  return false;
+}
+
+function netDisconnect(silent) {
+  if (NET.on && NET.mq) { NET.role === 'player' ? netToHost('bye', {}) : netBroadcast('bye', { id: NET.myId }); }
+  setTimeout(() => { try { NET.mq && NET.mq.close(); } catch (_) {} }, 200);
+  NET.on = false; NET.role = null; NET.mq = null; NET.peers = {}; NET.roster = [];
+  NET.status = 'off'; NET.rtt = 0; NET.lastCharSnap = '';
+  document.documentElement.dataset.net = 'off';
+  if (!silent) toast('已离开房间');
+  renderOnline();
+}
+
+/* ── 报文分发 ── */
+
+async function netIncoming(topic, payload) {
+  NET.stat.rx++;
+  let env;
+  try { env = await netOpen(payload); } catch (_) { NET.stat.rxBad++; return; }   // 无法解密：房间码不符或外部广播
+  if (!env || !env.t || env.f === NET.myId) return;
+  if (env.to && env.to !== 'all' && env.to !== NET.myId) return;
+  if (NET.role === 'host') netHostRecv(env);
+  else netPlayerRecv(env);
+}
+
+/* ── 主持台 ── */
+
+function netHostRecv(env) {
+  const p = env.f;
+  if (NET.peers[p]) NET.peers[p].seen = Date.now();
+  switch (env.t) {
+    case 'hello': {
+      NET.peers[p] = { id: p, name: (env.d && env.d.name) || '旅人', charId: null, seen: Date.now() };
+      if (env.d && env.d.char) netAdoptRemoteChar(env.d.char, p);
+      toast('✦ ' + NET.peers[p].name + ' 加入了远征');
+      addSys(`${NET.peers[p].name} 加入了这场远征。`);
+      netPushRoster();
+      netSendSnapshot(p);
+      break;
+    }
+    case 'msg': {
+      if (!env.d || !env.d.msg) break;
+      netApplyMsg(env.d.msg, true);
+      netBroadcast('msg', { msg: env.d.msg });
+      if (env.d.msg.role === 'player') { netUpdateRosterFromMsg(env.d.msg); askDM(); }
+      break;
+    }
+    case 'sheet': {
+      if (!env.d || !env.d.char) break;
+      netAdoptRemoteChar(env.d.char, p);
+      netBroadcast('sheet', { char: env.d.char }, 'others');
+      renderTable(); renderHome();
+      break;
+    }
+    case 'mkdone': netApplyMkDone(env.d); netBroadcast('mkdone', env.d, 'others'); break;
+    case 'ping': netToClient('pong', { ts: env.d && env.d.ts }, p); break;
+    case 'bye': {
+      const nm = (NET.peers[p] || {}).name || '一位同伴';
+      delete NET.peers[p];
+      addSys(`${nm} 离开了这场远征。`);
+      toast(nm + ' 离开了房间');
+      netPushRoster();
+      break;
+    }
+  }
+}
+function netUpdateRosterFromMsg(msg) {
+  if (!msg.charId || !NET.peers[msg.__from]) return;
+  NET.peers[msg.__from].charId = msg.charId;
+  netPushRoster();
+}
+
+function netPushCombat() { if (NET.on && NET.role === 'host') netBroadcast('combat', state.combat); }
+
+function netPushRoster() {
+  const list = [{ id: NET.myId, name: NET.myName, charId: NET.charId, host: true }];
+  Object.values(NET.peers).forEach(p => list.push({ id: p.id, name: p.name, charId: p.charId, host: false }));
+  NET.roster = list;
+  netBroadcast('roster', { list });
+  renderOnline(); renderPartySide();
+}
+function netSendSnapshot(to) {
+  netToClient('welcome', {
+    hostName: NET.myName, hostId: NET.myId, room: NET.room,
+    chat: state.chat.slice(-260),
+    combat: state.combat,
+    roster: NET.roster,
+    moduleTitle: (state.modules.find(m => m.id === state.moduleId) || {}).title || '',
+    chars: party().map(c => JSON.parse(JSON.stringify(c))),
+    style: state.settings.style, pov: state.settings.pov
+  }, to);
+}
+
+/* ── 玩家端 ── */
+
+function netPlayerRecv(env) {
+  switch (env.t) {
+    case 'welcome': {
+      const d = env.d || {};
+      NET.hostId = env.f; NET.hostName = d.hostName || '主持台';
+      NET.roster = d.roster || [];
+      state.chat = (d.chat || []).map(m => ({ ...m, _remote: true }));
+      state.combat = d.combat || state.combat;
+      (d.chars || []).forEach(c => netAdoptRemoteChar(c));
+      const ids = (d.roster || []).map(r => r.charId).filter(Boolean);
+      state.partyIds = Array.from(new Set(ids.filter(id => getChar(id))));
+      if (NET.charId) { state.activeCharId = NET.charId; if (!state.partyIds.includes(NET.charId)) state.partyIds.push(NET.charId); }
+      persist(); renderChat(); renderPartySide(); renderCombat(); renderSheet(); renderOnline();
+      netStatus('已加入 · ' + netInfo(), 'ok');
+      toast('已进入《' + (d.moduleTitle || '远征') + '》');
+      setView('table');
+      break;
+    }
+    case 'msg': if (env.d && env.d.msg) { netApplyMsg(env.d.msg, true); } break;
+    case 'stream': netStreamRemote(env.d); break;
+    case 'roster': NET.roster = (env.d && env.d.list) || []; renderOnline(); renderPartySide(); break;
+    case 'combat': state.combat = env.d || state.combat; renderCombat(); persist(); break;
+    case 'sheet': if (env.d && env.d.char) { netAdoptRemoteChar(env.d.char); if (env.d.char.id === NET.charId) NET.lastCharSnap = JSON.stringify(env.d.char); renderSheet(); renderPartySide(); renderTable(); } break;
+    case 'mkdone': netApplyMkDone(env.d); break;
+    case 'pong': if (env.d && env.d.ts) { NET.rtt = Date.now() - env.d.ts; NET.lastPong = Date.now(); netStatus('已连接 · ' + netInfo(), 'ok'); } break;
+    case 'bye': netStatus('主持台已关闭房间。', 'err'); toast('主持台已结束本次远征', 'err'); break;
+  }
+}
+
+/* ── 共享的辅助：采纳远端角色 / 应用消息 / 标记 ── */
+
+function netAdoptRemoteChar(char, fromPeer) {
+  if (!char || !char.id) return;
+  const i = state.chars.findIndex(c => c.id === char.id);
+  if (i >= 0) {
+    const local = state.chars[i];
+    if (JSON.stringify(local) === JSON.stringify(char)) return;
+    state.chars[i] = { ...local, ...char };
+  } else {
+    state.chars.push(char);
+  }
+  if (!state.partyIds.includes(char.id)) state.partyIds.push(char.id);
+  if (fromPeer && NET.peers[fromPeer]) { NET.peers[fromPeer].charId = char.id; netPushRoster(); }
+  // 若采纳的正是「我自己的角色卡」，立刻更新快照，避免把它当成本地改动又发回去
+  if (NET.role === 'player' && char.id === NET.charId) NET.lastCharSnap = JSON.stringify(getChar(char.id));
+  persist();
+}
+
+function netApplyMsg(msg, remote) {
+  if (!msg || !msg.id) msg = { ...msg, id: uid() };
+  if (state.chat.some(m => m.id === msg.id)) return;         // 去重
+  if (remote) { msg._remote = true; if (msg.__from) delete msg.__from; }
+  state.chat.push(msg);
+  renderChat(); persist(); renderHome();
+}
+
+function netApplyMkDone(d) {
+  if (!d) return;
+  const m = state.chat.find(x => x.id === d.msgId);
+  if (!m || !m.markers || !m.markers[d.j]) return;
+  m.mkDone = m.mkDone || {};
+  if (m.mkDone[d.j]) return;
+  m.mkDone[d.j] = true;
+  renderChat(); persist();
+}
+
+/* 本机产生的消息 → 广播出去（主持台发给所有玩家，玩家发给主持台） */
+function netPushLocal(m) {
+  if (!NET.on || !m || m._remote) return;
+  if (m.role === 'player' && m.__from === undefined) m.__from = NET.myId;
+  netSend(NET.role === 'host' ? 'h' : 'c', 'msg', { msg: { ...m, charId: m.charId || (m.role === 'player' ? activeChar()?.id : null) } });
+}
+
+/* 我的角色卡有变化 → 上报（自动比对，避免无谓流量） */
+function netSyncMyChar() {
+  if (!NET.on) return;
+  const c = NET.role === 'player' ? getChar(NET.charId) : activeChar();
+  if (!c || !state.partyIds.includes(c.id)) return;
+  const snap = JSON.stringify(c);
+  if (snap === NET.lastCharSnap) return;
+  NET.lastCharSnap = snap;
+  const payload = { char: JSON.parse(snap) };
+  if (NET.role === 'player') netToHost('sheet', payload);
+  else netBroadcast('sheet', payload);
+}
+
+/* ── 主持台流式叙事 → 所有玩家实时看到 ── */
+let netStreamTick = 0;
+function netStreamLocal(text, done) {
+  if (!NET.on || NET.role !== 'host') return;
+  const now = Date.now();
+  if (!done && now - netStreamTick < 220 && text.length % 4) return;   // 节流，避免刷屏
+  netStreamTick = now;
+  netBroadcast('stream', { text, done: !!done });
+}
+
+function netStreamRemote(d) {
+  if (!d) return;
+  const log = $('#chat-log');
+  let holder = $('#net-stream');
+  if (!holder) {
+    holder = document.createElement('div');
+    holder.id = 'net-stream'; holder.className = 'msg dm';
+    holder.innerHTML = '<div class="who">🜂 地下城主 · DM <span class="net-live">讲述中…</span></div><div class="body"></div>';
+    log.appendChild(holder);
+  }
+  holder.querySelector('.body').innerHTML = fmtText(d.text || '') || '<span class="typing"><i></i><i></i><i></i></span>';
+  log.scrollTop = log.scrollHeight;
+  if (d.done) setTimeout(() => holder.remove(), 60);
+}
+
+/* ── 心跳 / 掉线检测 ── */
+
+function netOnReady() {
+  NET.status = 'online'; NET.on = true; NET.startedAt = Date.now();
+  document.documentElement.dataset.net = 'on';
+  if (NET.role === 'host') { netPushRoster(); }
+  else netToHost('hello', { name: NET.myName, char: getChar(NET.charId) });
+  netSyncMyChar();
+  renderOnline();
+}
+
+setInterval(() => {
+  if (!NET.on) return;
+  if (NET.role === 'player') {
+    netToHost('ping', { ts: Date.now() });
+    if (NET.lastPong && Date.now() - NET.lastPong > 60000) netStatus('与主持台的连接似乎已中断…', 'wait');
+  } else {
+    let dirty = false;
+    Object.keys(NET.peers).forEach(id => {
+      if (Date.now() - NET.peers[id].seen > 90000) { addSys((NET.peers[id].name || '一位同伴') + ' 似乎掉线了。'); delete NET.peers[id]; dirty = true; }
+    });
+    if (dirty) netPushRoster(); else netBroadcast('roster', { list: NET.roster });
+  }
+}, 15000);
+
+/* ══════════════════════════════════════════════════════════════
+   25. 联机 · 界面与交互
+   ══════════════════════════════════════════════════════════════ */
+
+async function netHost_(roomName) {
+  if (NET.on) { toast('请先离开当前房间', 'err'); return; }
+  NET.role = 'host';
+  NET.myId = 'h_' + uid();
+  NET.myName = state.settings.username || '主持台';
+  NET.room = netNewCode();
+  NET.base = netBase(NET.room);
+  NET.charId = state.activeCharId || null;
+  NET.status = 'connecting';
+  renderOnline();
+  const ok = await netConnect();
+  if (!ok) { NET.role = null; NET.on = false; renderOnline(); return; }
+  if (roomName) state.pendingCampaignName = roomName;
+  toast('房间已创建：' + NET.room);
+  renderOnline();
+}
+
+async function netJoin_(code) {
+  if (NET.on) { toast('请先离开当前房间', 'err'); return; }
+  code = String(code || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{4,8}$/.test(code)) { toast('房间码格式不正确', 'err'); return; }
+  openJoinCharModal(code);
+}
+
+function openJoinCharModal(code) {
+  const list = state.chars;
+  openModal({
+    title: '选择你的角色卡',
+    body: `
+      <p class="muted" style="margin-bottom:12px">房间 <b style="color:var(--brass);letter-spacing:.2em">${esc(code)}</b> · 你将带着这张角色卡进入同一场冒险。只有你自己的角色卡可以由你修改。</p>
+      <label class="field"><span>你在本次远征中的称呼</span><input type="text" id="jn-name" value="${esc(state.settings.username || '')}" placeholder="例如：莉安"></label>
+      <div class="modal-list" id="jn-list" style="margin-top:14px">
+        ${list.length ? list.map(c => `
+          <div class="ml-item ${c.id === state.activeCharId ? 'on' : ''}" data-id="${c.id}" onclick="jnPick_('${c.id}')">
+            <b>${esc(c.name)}</b>
+            <span>${esc(c.race)} ${esc(c.cls)} Lv.${c.level} · HP ${c.hp}/${c.maxHp} · AC ${c.ac}</span>
+          </div>`).join('') : '<p class="muted" style="padding:10px 0">你还没有角色卡。点击下方按钮创建一位冒险者。</p>'}
+      </div>`,
+    footer: `<button class="btn ghost" onclick="closeModal();editChar_(null)">+ 新建角色</button>
+             <button class="btn primary" id="jn-go" onclick="jnGo_('${code}')">进入房间</button>`
+  });
+  window.__jnPick = list.find(c => c.id === state.activeCharId)?.id || list[0]?.id || null;
+}
+window.jnPick_ = id => {
+  window.__jnPick = id;
+  $$('#jn-list .ml-item').forEach(el => el.classList.toggle('on', el.dataset.id === id));
+};
+window.jnGo_ = async code => {
+  const c = getChar(window.__jnPick);
+  if (!c) { toast('请先选择或创建一张角色卡', 'err'); return; }
+  const name = ($('#jn-name').value || '').trim() || c.name;
+  closeModal();
+  NET.role = 'player'; NET.myId = 'p_' + uid(); NET.myName = name;
+  NET.room = code; NET.base = netBase(code); NET.charId = c.id;
+  state.activeCharId = c.id;
+  if (!state.partyIds.includes(c.id)) state.partyIds.push(c.id);
+  persist();
+  NET.status = 'connecting'; renderOnline(); setView('online');
+  const ok = await netConnect();
+  if (!ok) { NET.role = null; NET.on = false; renderOnline(); return; }
+  toast('正在进入房间 ' + code + ' …');
+};
+
+window.netLeave_ = () => {
+  if (!confirm('离开当前房间？桌面上的共享进度仍保存在本地，但不会再同步。')) return;
+  netDisconnect();
+  document.documentElement.dataset.net = 'off';
+  renderOnline();
+};
+
+window.netCopy_ = () => {
+  const url = netInviteLink();
+  const done = () => toast('邀请链接已复制，发给同伴即可');
+  if (navigator.clipboard && location.protocol !== 'file:') navigator.clipboard.writeText(url).then(done, () => prompt('复制下面的链接：', url));
+  else prompt('复制下面的链接发给同伴：', url);
+};
+function netInviteLink() {
+  const u = location.origin + location.pathname;
+  return NET.role === 'host' ? u + '?room=' + NET.room : u + '?room=' + NET.room;
+}
+
+window.netKick_ = id => {
+  if (!confirm('把该同伴移出房间？')) return;
+  netToClient('bye', {}, id);
+  delete NET.peers[id];
+  netPushRoster();
+};
+
+function renderTopNet() {
+  const tb = $('#tb-actions');
+  if (!tb) return;
+  if (!NET.on) { tb.querySelectorAll('.net-chip').forEach(e => e.remove()); return; }
+  let chip = tb.querySelector('.net-chip');
+  if (!chip) { chip = document.createElement('button'); chip.className = 'chip-btn net-chip'; chip.onclick = () => setView('online'); tb.insertBefore(chip, tb.firstChild); }
+  chip.innerHTML = NET.role === 'host' ? `🜂 房间 ${NET.room}` : `🎲 ${NET.hostName}`;
+}
+
+function renderOnline() {
+  const off = $('#net-offline'), on = $('#net-online');
+  if (!off || !on) return;
+  if (!NET.on) {
+    off.style.display = ''; on.style.display = 'none';
+    const c = NET.status === 'connecting';
+    $('#btn-net-host').disabled = c; $('#btn-net-join').disabled = c;
+    return;
+  }
+  off.style.display = 'none'; on.style.display = '';
+  const isHost = NET.role === 'host';
+  const me = NET.roster.find(r => r.id === NET.myId) || {};
+  const chars = NET.roster.map(r => {
+    const ch = getChar(r.charId);
+    return `<div class="net-peer ${r.id === NET.myId ? 'me' : ''}">
+      <div class="pt-av">${ch && ch.avatar ? `<img src="${ch.avatar}">` : esc((r.name || '?')[0])}</div>
+      <div class="pt-meta">
+        <b>${esc(r.name)}${r.host ? ' <span class="net-host-tag">主持台</span>' : ''}${r.id === NET.myId ? ' <span class="net-me-tag">你</span>' : ''}</b>
+        <span>${ch ? `${esc(ch.race)} ${esc(ch.cls)} Lv.${ch.level} · HP ${ch.hp}/${ch.maxHp}` : '尚未带入角色卡'}</span>
+      </div>
+      ${isHost && r.id !== NET.myId ? `<button class="sc-btn del" onclick="netKick_('${r.id}')">移出</button>` : ''}
+    </div>`;
+  }).join('');
+
+  on.innerHTML = `
+    <div class="card-hd">
+      <h3>🛰️ ${isHost ? '主持中的远征' : '远征：' + esc(NET.hostName)}</h3>
+      <span class="card-tag">${NET.roster.length} 人</span>
+    </div>
+    <div class="card-bd">
+      <div class="net-room">
+        <div class="nr-code">
+          <span>房间码</span>
+          <b>${NET.room}</b>
+        </div>
+        <div class="nr-actions">
+          ${isHost ? `<button class="btn" onclick="netCopy_()">复制邀请链接</button>` : ''}
+          <button class="btn ghost" onclick="setView('table')">进入桌面</button>
+          <button class="btn danger" onclick="netLeave_()">离开房间</button>
+        </div>
+      </div>
+      ${isHost ? `<p class="hint" style="margin-top:10px">把链接 <code>${esc(netInviteLink())}</code> 发给同伴，他们打开后输入房间码即可加入。</p>` : ''}
+      <div class="net-status" id="net-status">已连接 · ${netInfo()}</div>
+
+      <h4 class="net-h4">参与者 <em>${NET.roster.length}</em></h4>
+      <div class="net-peers">${chars}</div>
+
+      <div class="net-tips">
+        <p><b>怎么玩：</b>所有人都在「跑团桌面」里行动。${isHost ? '你负责运行 AI 地下城主，其他人在自己的设备上说话、掷骰，进度会自动同步。' : '你在自己设备上说话、掷骰，主持台会把结果同步给所有人。'}</p>
+        <p><b>关于角色卡：</b>每个人只能修改自己的角色卡（点右上角角色卡面板里的「编辑」）。别人的卡对你是只读的。</p>
+        <p><b>关于隐私：</b>房间内容用房间码派生的密钥端到端加密，公共中转上看不到明文。${NET.secure ? '' : '<b style="color:#c0392b">当前浏览器未提供加密能力（需 HTTPS），内容未加密。</b>'}</p>
+      </div>
+    </div>`;
+  netStatus('已连接 · ' + netInfo(), 'ok');
+}
+
+/* 玩家端：锁住属于主持台的功能 */
+function applyNetMode() {
+  const player = NET.on && NET.role === 'player';
+  document.documentElement.dataset.net = NET.on ? (player ? 'player' : 'host') : 'off';
+  const launch = $('#btn-launch'), prep = $('#btn-run-anyway');
+  if (launch) { launch.disabled = player; launch.title = player ? '由主持台开启远征' : ''; }
+  if (prep) prep.disabled = player;
+  if ($('#rail-user')) {
+    const sub = $('#ru-sub');
+    if (sub) sub.textContent = NET.on ? (player ? `已连接 · ${NET.room}` : `主持中 · ${NET.room}`) : '本地档案模式';
+  }
+}
 
 /* ─────────────── 22. 启动 ─────────────── */
 
@@ -2562,6 +3246,7 @@ function init() {
   restore();
   applySettings();
   bind();
+  applyNetMode();
   renderHome();
   renderSheet();
   bootSequence();
@@ -2571,6 +3256,13 @@ function init() {
   setTimeout(() => {
     if (!state.settings.apiKey) toast('提示：前往「设置中心」填入 API 密钥即可让 AI 担任地下城主');
   }, 2400);
+  // 邀请链接：?room=XXXXXX 直接进入加入流程
+  const roomParam = new URLSearchParams(location.search).get('room');
+  if (roomParam) setTimeout(() => {
+    setView('online');
+    const el = $('#net-code'); if (el) el.value = roomParam.toUpperCase();
+    toast('检测到房间邀请 ' + roomParam.toUpperCase() + '：选择角色卡即可加入');
+  }, 2800);
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
@@ -2580,6 +3272,9 @@ else init();
 window.AELDRIN = {
   get state() { return state; },
   get WIZ() { return WIZ; },
+  get NET() { return NET; },
+  netHost_, netJoin_, netDisconnect, netConnect, netSeal, netOpen, netHash, netBase, netNewCode,
+  applyNetMode, renderOnline, netInviteLink, netPushLocal, netSyncMyChar,
   RACES, CLASSES, BACKGROUNDS, ALIGNMENTS, SKILLS, AB,
   rollExpr, MOD, PROF, sign, calcMaxHp, hpBreakdown, syncDerived, applyRacial, suggestAC,
   newChar, adoptChar, deriveBaseFromFinal, parseMarkers, doRoll, doCheck, saveSession, persist, setView,

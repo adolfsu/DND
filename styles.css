@@ -815,6 +815,63 @@ html[data-theme="light"] .sp-av{background:linear-gradient(145deg,#e8dcc4,#d6c6a
   }
 }
 
+/* ═══ 联机远征 ═══ */
+.net-choices{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+.net-choice{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:var(--r-l);padding:20px;display:flex;flex-direction:column;gap:10px}
+.net-choice .nc-icon{font-size:26px;line-height:1}
+.net-choice h4{font-size:16px;color:var(--ink);letter-spacing:.04em}
+.net-choice p{font-size:13px;color:var(--ink-2);line-height:1.72;flex:1}
+.net-choice .btn{margin-top:4px;width:100%}
+
+.net-how{margin-top:24px;padding-top:18px;border-top:1px solid var(--line-soft)}
+.net-how h4{font-size:12px;color:var(--brass);letter-spacing:.16em;margin-bottom:10px}
+.net-how ol{margin:0 0 10px 18px;font-size:13.5px;color:var(--ink-2);line-height:1.9}
+.net-how ol b{color:var(--ink)}
+.net-how .hint{font-size:12.5px;color:var(--ink-3);line-height:1.75}
+
+.net-room{display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between}
+.nr-code{display:flex;align-items:baseline;gap:12px}
+.nr-code span{font-size:12px;color:var(--ink-3);letter-spacing:.16em}
+.nr-code b{font-size:27px;letter-spacing:.26em;color:var(--brass);font-family:ui-monospace,Consolas,"Courier New",monospace}
+.nr-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+.net-status{margin-top:12px;padding:10px 14px;border-radius:var(--r-m);background:var(--panel-2);border:1px solid var(--line-soft);font-size:12.5px;color:var(--ink-2);line-height:1.65}
+.net-status.ok{border-color:rgba(79,138,106,.55);color:var(--emerald)}
+.net-status.wait{border-color:rgba(200,164,94,.5);color:var(--brass)}
+.net-status.err{border-color:rgba(163,58,52,.55);color:var(--blood)}
+.net-status .hint{display:block;margin-top:5px;color:var(--ink-3)}
+
+.net-h4{margin:22px 0 10px;font-size:12px;color:var(--brass);letter-spacing:.16em;text-transform:uppercase}
+.net-h4 em{font-style:normal;color:var(--ink-3);margin-left:6px}
+.net-peers{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:10px}
+.net-peer{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:var(--r-m);background:var(--panel-2);border:1px solid var(--line-soft)}
+.net-peer.me{border-color:rgba(200,164,94,.44);background:var(--panel-3)}
+.net-peer .pt-meta{flex:1;min-width:0}
+.net-host-tag,.net-me-tag{font-size:10px;padding:1px 6px;border-radius:20px;border:1px solid var(--line);color:var(--brass);letter-spacing:.06em;white-space:nowrap}
+.net-me-tag{color:var(--azure)}
+
+.net-tips{margin-top:22px;padding-top:16px;border-top:1px solid var(--line-soft);font-size:13px;color:var(--ink-2);line-height:1.8}
+.net-tips p{margin-bottom:9px}
+.net-tips b{color:var(--ink)}
+
+.net-chip{font-weight:600}
+.net-live{font-size:11px;color:var(--brass);margin-left:8px;letter-spacing:.08em}
+#net-stream .body{opacity:.92}
+html[data-net="on"] #ru-sub{color:var(--emerald)}
+
+/* 玩家端：只有主持台能用的入口直接收起 */
+html[data-net="player"] #btn-launch,
+html[data-net="player"] #btn-run-anyway,
+html[data-net="player"] .host-only{display:none !important}
+
+@media(max-width:1000px){
+  .net-choices{grid-template-columns:1fr}
+  .nr-code b{font-size:22px;letter-spacing:.2em}
+  .net-peers{grid-template-columns:1fr}
+  .nr-actions{width:100%}
+  .nr-actions .btn{flex:1}
+}
+
 /* ═══ 响应式 ═══ */
 @media(max-width:1000px){
   /* 左右两翼转为 fixed 抽屉后已脱离网格流，主舞台必须独占唯一的列 */

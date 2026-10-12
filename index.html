@@ -30,7 +30,7 @@
       </svg>
     </div>
     <h1 class="boot-title">AELDRIN'S TABLE</h1>
-    <p class="boot-sub">地下城主的旧日卷帙 &nbsp;·&nbsp; 频段 156.7 MHz &nbsp;·&nbsp; Ver 1.0.0</p>
+    <p class="boot-sub">地下城主的旧日卷帙 &nbsp;·&nbsp; 频段 156.7 MHz &nbsp;·&nbsp; Ver 1.1.0</p>
     <div class="boot-bar"><i></i></div>
     <p class="boot-log" id="boot-log">正在唤醒沉睡的卷帙…</p>
   </div>
@@ -56,6 +56,7 @@
     <nav class="rail-nav" id="rail-nav">
       <button class="nav-item" data-view="home"><i>🕯️</i><span>大厅</span></button>
       <button class="nav-item" data-view="table"><i>⚔️</i><span>跑团桌面</span></button>
+      <button class="nav-item" data-view="online"><i>🛰️</i><span>联机远征</span></button>
       <button class="nav-item" data-view="prep"><i>📜</i><span>仪式准备</span></button>
       <button class="nav-item" data-view="codex"><i>🧝</i><span>角色档案</span></button>
       <button class="nav-item" data-view="saves"><i>🗄️</i><span>记忆回廊</span></button>
@@ -92,7 +93,7 @@
       <section class="view" data-view="home">
         <div class="hero">
           <div class="hero-glow"></div>
-          <p class="hero-kicker">FREQUENCY 156.7 MHz · VER 1.0.0</p>
+          <p class="hero-kicker">FREQUENCY 156.7 MHz · VER 1.1.0</p>
           <h1 class="hero-title">选择你的<span>远征</span></h1>
           <p class="hero-desc">骰子落地之前，一切皆有可能。由 AI 担任地下城主（DM），为你编织一场专属的冒险。</p>
           <div class="hero-modes">
@@ -102,10 +103,10 @@
               <p>独自踏入地城。AI 地下城主掌控世界、怪物与命运，为你实时裁定每一次检定。</p>
               <span class="mc-cta">建立远征 →</span>
             </button>
-            <button class="mode-card" data-goto="table" data-mode="coop">
-              <div class="mc-icon">🛡️</div>
-              <h3>同屏联机</h3>
-              <p>把多位冒险者的角色卡放进同一张桌面，按先攻顺序轮流动手（同浏览器多标签可实时同步）。</p>
+            <button class="mode-card" data-goto="online" data-mode="coop">
+              <div class="mc-icon">🛰️</div>
+              <h3>异地联机</h3>
+              <p>一位同伴当主持台，其他人带着自己的角色卡从不同地方加入同一场冒险，剧情与骰点实时同步。</p>
               <span class="mc-cta">召集同伴 →</span>
             </button>
           </div>
@@ -127,6 +128,13 @@
           <div class="card-hd"><h3>📣 卷帙广播</h3><span class="card-tag">Changelog</span></div>
           <div class="card-bd prose">
             <p class="quote">「把剑放下的人，往往比举起剑的人更需要勇气。」</p>
+            <h4>v1.1.0 异地联机</h4>
+            <ul>
+              <li><b>联机远征</b>：一人担任主持台运行 AI 地下城主，其他人凭房间码从异地加入；每人带自己的角色卡，只有本人能修改自己的卡。</li>
+              <li><b>实时同步</b>：发言、掷骰、先攻序列、DM 流式叙事全桌同步；掉线自动重连并补齐进度。</li>
+              <li><b>端到端加密</b>：房间内容以房间码派生的密钥加密，中转节点上看不到明文。</li>
+              <li><b>手机适配</b>：抽屉式导航与角色面板，手机上也能顺畅开团。</li>
+            </ul>
             <h4>v1.0.0 初始频段</h4>
             <ul>
               <li><b>D&amp;D 5e 规则引擎</b>：六维属性、18 项技能、熟练加值、优势／劣势、AC 与先攻、等级与经验曲线。</li>
@@ -190,6 +198,44 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- ── 联机远征 ── -->
+      <section class="view" data-view="online">
+        <div class="card" id="net-offline">
+          <div class="card-hd"><h3>🛰️ 联机远征</h3><span class="card-tag">Online</span></div>
+          <div class="card-bd">
+            <p class="muted">由一位同伴担任「主持台」，其他人带着自己的角色卡加入同一场冒险。跨网络、跨设备，无需自建服务器。</p>
+            <div class="net-choices">
+              <div class="net-choice">
+                <div class="nc-icon">🜂</div>
+                <h4>我来主持</h4>
+                <p>你的设备负责运行 AI 地下城主、保管剧情与先攻序列。创建之后把邀请链接发给同伴即可。</p>
+                <label class="field"><span>本次远征名称（可选）</span><input type="text" id="net-roomname" placeholder="例如：余烬之冠 · 第一夜"></label>
+                <button class="btn primary lg" id="btn-net-host">🜂 创建房间</button>
+              </div>
+              <div class="net-choice">
+                <div class="nc-icon">🎲</div>
+                <h4>加入远征</h4>
+                <p>输入同伴给你的房间码，带上你自己的角色卡进入同一张桌面。</p>
+                <label class="field"><span>房间码</span><input type="text" id="net-code" placeholder="XXXXXX" maxlength="8" autocomplete="off" spellcheck="false" style="text-transform:uppercase;letter-spacing:.3em;font-weight:700"></label>
+                <button class="btn primary lg" id="btn-net-join">🎲 加入房间</button>
+              </div>
+            </div>
+            <div class="net-how">
+              <h4>它是怎么运作的</h4>
+              <ol>
+                <li><b>一人主持</b> —— 主持台的设备连接 AI 接口，负责全部叙事、裁定与先攻序列。</li>
+                <li><b>其他人加入</b> —— 各自用手机或电脑打开同一个网址，输入房间码即可进入。</li>
+                <li><b>各带各的角色卡</b> —— 每个人创建自己的冒险者，只有本人能修改自己的角色卡。</li>
+                <li><b>实时同步</b> —— 谁说了什么、掷出多少，全桌立刻看到；掉线重连后会自动补齐进度。</li>
+              </ol>
+              <p class="hint">房间内容经房间码派生的密钥端到端加密；角色卡与存档仍然只保存在各自的设备上。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="net-online" style="display:none"></div>
       </section>
 
       <!-- ── 仪式准备 ── -->
@@ -402,6 +448,7 @@
 
             <h4>第九章 · 关于数据</h4>
             <p>所有角色卡、存档、日志都保存在<b>浏览器本地</b>（localStorage）。清理站点数据会一并抹除。API 密钥同样只存在本地，不会上传到任何第三方服务器 —— 它只会被用于你填写的那个接口地址。</p>
+            <p><b>联机时</b>，房间里交换的内容（发言、骰点、角色卡变更）会用房间码派生的密钥做 AES-GCM 端到端加密，再经过公共中转节点转发。中转节点只能看到一段密文，看不到内容；但请把它当作「房间号即暗号」—— 把邀请链接发给信任的人。</p>
           </div>
         </div>
       </section>
@@ -475,7 +522,7 @@
         <div class="card">
           <div class="card-hd"><h3>ℹ️ 关于</h3></div>
           <div class="card-bd prose">
-            <p><b>Aeldrin's Table</b> — 地下城主的旧日卷帙 · Ver 1.0.0</p>
+            <p><b>Aeldrin's Table</b> — 地下城主的旧日卷帙 · Ver 1.1.0</p>
             <p>一个纯粹的本地跑团桌面：无账号、无上传、无遥测。灵感来自桌游广播与旧日档案。</p>
             <p class="quote">「骰子不撒谎，它只是冷酷。」</p>
           </div>
