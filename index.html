@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>AELDRIN'S TABLE — 地下城主的旧日卷帙 · D&D 5e</title>
+<meta name="description" content="AI 担任地下城主的 D&D 5e 单人跑团桌面：角色卡、骰点检定、先攻战斗、模组导入、存档回廊、冒险札记。">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ═══════════ 加载屏 ═══════════ -->
+<div id="boot-screen">
+  <div class="boot-inner">
+    <div class="boot-sigil">
+      <svg viewBox="0 0 120 120" width="120" height="120">
+        <defs><linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#d8b878"/><stop offset="100%" stop-color="#8a6a35"/>
+        </linearGradient></defs>
+        <polygon points="60,8 108,34 108,86 60,112 12,86 12,34" fill="none" stroke="url(#bg1)" stroke-width="1.6"/>
+        <polygon points="60,22 96,42 96,78 60,98 24,78 24,42" fill="none" stroke="#8a6a35" stroke-width="1" opacity=".7"/>
+        <text x="60" y="70" text-anchor="middle" font-size="30" fill="#d8b878" font-family="serif">20</text>
+      </svg>
+    </div>
+    <h1 class="boot-title">AELDRIN'S TABLE</h1>
+    <p class="boot-sub">地下城主的旧日卷帙 &nbsp;·&nbsp; 频段 156.7 MHz &nbsp;·&nbsp; Ver 1.0.0</p>
+    <div class="boot-bar"><i></i></div>
+    <p class="boot-log" id="boot-log">正在唤醒沉睡的卷帙…</p>
+  </div>
+</div>
+
+<!-- ═══════════ 主壳 ═══════════ -->
+<div id="app" class="hidden">
+
+  <!-- 左侧导航 -->
+  <aside class="rail" id="rail">
+    <div class="rail-brand">
+      <div class="brand-mark">20</div>
+      <div class="brand-text">
+        <b>AELDRIN</b>
+        <span>D&amp;D 5E TABLE</span>
+      </div>
+    </div>
+
+    <nav class="rail-nav" id="rail-nav">
+      <button class="nav-item" data-view="home"><i>🕯️</i><span>大厅</span></button>
+      <button class="nav-item" data-view="table"><i>⚔️</i><span>跑团桌面</span></button>
+      <button class="nav-item" data-view="prep"><i>📜</i><span>仪式准备</span></button>
+      <button class="nav-item" data-view="codex"><i>🧝</i><span>角色档案</span></button>
+      <button class="nav-item" data-view="saves"><i>🗄️</i><span>记忆回廊</span></button>
+      <button class="nav-item" data-view="novel"><i>🪶</i><span>吟游诗篇</span></button>
+      <button class="nav-item" data-view="manual"><i>📖</i><span>城主手册</span></button>
+      <button class="nav-item" data-view="settings"><i>⚙️</i><span>设置中心</span></button>
+    </nav>
+
+    <div class="rail-foot" id="rail-foot">
+      <div class="rail-user" id="rail-user">
+        <div class="ru-avatar" id="ru-avatar">旅</div>
+        <div class="ru-info">
+          <b id="ru-name">无名的旅人</b>
+          <span id="ru-sub">本地档案模式</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 主舞台 -->
+  <main class="stage">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="btn-menu" title="菜单">☰</button>
+      <div class="tb-title">
+        <h2 id="tb-title">大厅</h2>
+        <p id="tb-sub">Aeldrin's Table — 让命运在骰子落定前保持沉默</p>
+      </div>
+      <div class="tb-actions" id="tb-actions"></div>
+    </header>
+
+    <div class="scroll" id="views">
+
+      <!-- ── 大厅 ── -->
+      <section class="view" data-view="home">
+        <div class="hero">
+          <div class="hero-glow"></div>
+          <p class="hero-kicker">FREQUENCY 156.7 MHz · VER 1.0.0</p>
+          <h1 class="hero-title">选择你的<span>远征</span></h1>
+          <p class="hero-desc">骰子落地之前，一切皆有可能。由 AI 担任地下城主（DM），为你编织一场专属的冒险。</p>
+          <div class="hero-modes">
+            <button class="mode-card" data-goto="prep">
+              <div class="mc-icon">🎲</div>
+              <h3>单人模式</h3>
+              <p>独自踏入地城。AI 地下城主掌控世界、怪物与命运，为你实时裁定每一次检定。</p>
+              <span class="mc-cta">建立远征 →</span>
+            </button>
+            <button class="mode-card" data-goto="table" data-mode="coop">
+              <div class="mc-icon">🛡️</div>
+              <h3>同屏联机</h3>
+              <p>把多位冒险者的角色卡放进同一张桌面，按先攻顺序轮流动手（同浏览器多标签可实时同步）。</p>
+              <span class="mc-cta">召集同伴 →</span>
+            </button>
+          </div>
+          <div class="hero-stat" id="home-stat"></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-hd"><h3>⚡ 快速续接</h3><span class="card-tag">最近存档</span></div>
+            <div class="card-bd" id="home-recent"></div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><h3>🧝 角色速览</h3><span class="card-tag">名册</span></div>
+            <div class="card-bd" id="home-chars"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-hd"><h3>📣 卷帙广播</h3><span class="card-tag">Changelog</span></div>
+          <div class="card-bd prose">
+            <p class="quote">「把剑放下的人，往往比举起剑的人更需要勇气。」</p>
+            <h4>v1.0.0 初始频段</h4>
+            <ul>
+              <li><b>D&amp;D 5e 规则引擎</b>：六维属性、18 项技能、熟练加值、优势／劣势、AC 与先攻、等级与经验曲线。</li>
+              <li><b>AI 地下城主</b>：支持任意 OpenAI 兼容接口，流式叙事；回复中的 <code>[检定: 察觉|DC 15]</code> 会变成可点击的骰点按钮。</li>
+              <li><b>模组导入</b>：把 .txt / .md / .json 剧本喂给 DM，它会照着你的故事走。</li>
+              <li><b>记忆回廊</b>：本地存档、导入导出、随时回溯读取。</li>
+              <li><b>吟游诗篇</b>：把跑团日志改写为小说，一键导出 Markdown。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── 跑团桌面 ── -->
+      <section class="view" data-view="table">
+        <div class="table-wrap">
+          <div class="chat-col">
+            <div class="chat-head">
+              <div class="ch-mod">
+                <span class="ch-label">当前模组</span>
+                <b id="ch-mod-name">未载入模组</b>
+              </div>
+              <div class="ch-actions">
+                <button class="chip-btn" id="btn-roll-panel">🎲 骰盘</button>
+                <button class="chip-btn" id="btn-combat">⚔️ 先攻</button>
+                <button class="chip-btn" id="btn-save">💾 存档</button>
+                <button class="chip-btn" id="btn-clear-chat">🧹 清屏</button>
+              </div>
+            </div>
+            <div class="chat-log" id="chat-log"></div>
+            <div class="chat-quick" id="chat-quick"></div>
+            <div class="chat-input">
+              <textarea id="chat-text" rows="1" placeholder="描述你的行动，或输入 .ra 察觉 15 进行检定…"></textarea>
+              <div class="ci-side">
+                <button class="icon-btn" id="btn-dice-quick" title="掷骰 d20">🎲</button>
+                <button class="send-btn" id="btn-send" title="发送">➤</button>
+              </div>
+            </div>
+            <div class="chat-hint">
+              <kbd>.r 2d6+3</kbd> 掷骰 · <kbd>.ra 察觉 15</kbd> 检定 · <kbd>.atk 长剑</kbd> 攻击 · <kbd>.hp -8</kbd> 扣血 · <kbd>.xp 300</kbd> 经验 · 直接输入剧情即为 RP
+            </div>
+          </div>
+
+          <div class="side-col">
+            <div class="card compact">
+              <div class="card-hd"><h3>🧭 队员</h3><span class="card-tag" id="party-tag">0 名</span></div>
+              <div class="card-bd" id="party-list"></div>
+            </div>
+            <div class="card compact" id="combat-card" style="display:none">
+              <div class="card-hd"><h3>⚔️ 先攻序列</h3><span class="card-tag" id="combat-round">第 1 轮</span></div>
+              <div class="card-bd" id="combat-list"></div>
+            </div>
+            <div class="card compact">
+              <div class="card-hd"><h3>🎒 行囊</h3><span class="card-tag">背包</span></div>
+              <div class="card-bd" id="bag-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── 仪式准备 ── -->
+      <section class="view" data-view="prep">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-hd"><h3>📜 模组卷宗</h3><span class="card-tag">Adventure</span></div>
+            <div class="card-bd">
+              <div class="drop-zone" id="module-drop">
+                <div class="dz-icon">📥</div>
+                <p><b>点击或拖入模组文件</b></p>
+                <p class="dz-sub">支持 .txt / .md / .json，可多次追加不同章节</p>
+                <input type="file" id="module-file" hidden accept=".txt,.md,.json,.markdown">
+              </div>
+              <div class="row gap">
+                <button class="btn" id="btn-load-builtin">载入内置模组</button>
+                <button class="btn ghost" id="btn-new-module">手写模组</button>
+                <button class="btn ghost" id="btn-export-module">导出模组</button>
+              </div>
+              <div class="module-picker" id="module-picker"></div>
+              <div class="module-preview" id="module-preview"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-hd"><h3>🧝 冒险者名册</h3><span class="card-tag">Party</span></div>
+            <div class="card-bd">
+              <p class="muted">勾选本次远征的队伍成员（1–6 人）。</p>
+              <div class="roster" id="roster"></div>
+              <div class="row gap">
+                <button class="btn" id="btn-new-char-prep">+ 创建角色</button>
+                <button class="btn ghost" id="btn-run-anyway">直接开始（无角色）</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-hd"><h3>🚩 开团</h3><span class="card-tag">Launch</span></div>
+          <div class="card-bd">
+            <div class="grid-3">
+              <label class="field"><span>叙事风格</span>
+                <select id="opt-style">
+                  <option>史诗奇幻（经典英雄）</option>
+                  <option>黑暗奇幻（低魔写实）</option>
+                  <option>喜剧跑团（轻松搞怪）</option>
+                  <option>悬疑推理（线索与诡计）</option>
+                  <option>东方玄幻（仙侠色调）</option>
+                </select>
+              </label>
+              <label class="field"><span>叙事视角</span>
+                <select id="opt-pov">
+                  <option>第二人称（你）</option>
+                  <option>第三人称（跟随队长）</option>
+                  <option>第三人称（全知）</option>
+                </select>
+              </label>
+              <label class="field"><span>难度</span>
+                <select id="opt-diff">
+                  <option>标准（DM 公平裁定）</option>
+                  <option>仁慈（不轻易致死）</option>
+                  <option>残酷（死亡是可能的）</option>
+                </select>
+              </label>
+            </div>
+            <label class="field" style="margin:16px 0 6px"><span>本次远征名称（记忆回廊按它分组归档）</span>
+              <input type="text" id="opt-campaign" placeholder="留空则使用模组名">
+            </label>
+            <p class="hint" style="margin-top:0">每一次「开启远征」都会建立一个新的分组，同一场冒险的所有存档（含自动存档）都会归在一起，之后可以在记忆回廊里重命名。</p>
+            <label class="switch-row"><input type="checkbox" id="opt-dice-on" checked><span>由玩家亲自掷骰（DM 只提示检定，不代掷）</span></label>
+            <label class="switch-row"><input type="checkbox" id="opt-marker-on" checked><span>允许 DM 在叙事中插入「检定／伤害／经验」指令块</span></label>
+            <button class="btn primary lg" id="btn-launch">🎲 开启远征</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── 角色档案 ── -->
+      <section class="view" data-view="codex">
+        <div class="card">
+          <div class="card-hd">
+            <h3>🧝 角色档案室</h3>
+            <div class="row gap">
+              <button class="btn" id="btn-new-char">+ 创建冒险者</button>
+              <button class="btn ghost" id="btn-import-char">导入 JSON</button>
+              <input type="file" id="char-file" hidden accept=".json">
+            </div>
+          </div>
+          <div class="card-bd">
+            <div class="char-grid" id="char-grid"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── 记忆回廊 ── -->
+      <section class="view" data-view="saves">
+        <div class="card">
+          <div class="card-hd">
+            <h3>🗄️ 记忆回廊</h3>
+            <div class="row gap">
+              <button class="btn" id="btn-new-save-from-table">保存当前桌面</button>
+              <button class="btn ghost" id="btn-import-save">导入存档</button>
+              <input type="file" id="save-file" hidden accept=".json">
+            </div>
+          </div>
+          <div class="card-bd">
+            <div id="save-grid"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── 吟游诗篇 ── -->
+      <section class="view" data-view="novel">
+        <div class="card">
+          <div class="card-hd"><h3>🪶 吟游诗篇</h3><span class="card-tag">Chronicle</span></div>
+          <div class="card-bd">
+            <p class="muted">把枯燥的骰点记录重塑成一篇能读的故事。</p>
+            <div class="row gap wrap">
+              <button class="btn" id="btn-novel-from-table">用当前桌面日志创作</button>
+              <button class="btn ghost" id="btn-novel-pick">从存档创作</button>
+            </div>
+            <div class="grid-3" style="margin-top:14px">
+              <label class="field"><span>文体</span>
+                <select id="novel-style">
+                  <option>史诗纪传体</option>
+                  <option>第一人称冒险日记</option>
+                  <option>通俗小说（对话密集）</option>
+                  <option>黑暗寓言</option>
+                </select>
+              </label>
+              <label class="field"><span>篇幅</span>
+                <select id="novel-len"><option>短篇（约 600 字）</option><option>中篇（约 1500 字）</option><option>长篇（约 3000 字）</option></select>
+              </label>
+              <label class="field"><span>标题</span><input type="text" id="novel-title" placeholder="留空则由 AI 命名"></label>
+            </div>
+            <button class="btn primary" id="btn-novel-go">开始创作</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-hd"><h3>📚 藏书阁</h3><span class="card-tag" id="novel-tag">0 篇</span></div>
+          <div class="card-bd" id="novel-shelf"></div>
+        </div>
+      </section>
+
+      <!-- ── 城主手册 ── -->
+      <section class="view" data-view="manual">
+        <div class="card">
+          <div class="card-hd"><h3>📖 地下城主手册 · 速查</h3><span class="card-tag">Reference</span></div>
+          <div class="card-bd prose">
+            <h4>第一章 · 属性与调整值</h4>
+            <p>六大属性为<b>力量 STR / 敏捷 DEX / 体质 CON / 智力 INT / 感知 WIS / 魅力 CHA</b>。调整值 = ⌊(属性值 − 10) ÷ 2⌋。属性值 10–11 为 +0，12–13 为 +1，14–15 为 +2，16–17 为 +3，18–19 为 +4。</p>
+
+            <h4>第二章 · 检定与熟练</h4>
+            <p>任何有失败可能且失败有代价的行为，都通过 <code>d20 + 属性调整值 (+ 熟练加值) ≥ DC</code> 来裁定。熟练加值：1–4 级 +2，5–8 级 +3，9–12 级 +4，13–16 级 +5，17–20 级 +6。</p>
+            <table class="ref-table">
+              <thead><tr><th>难度</th><th>DC</th><th>典型情境</th></tr></thead>
+              <tbody>
+                <tr><td>非常容易</td><td>5</td><td>注意到明显的响动</td></tr>
+                <tr><td>容易</td><td>10</td><td>攀爬一堵有落脚点的矮墙</td></tr>
+                <tr><td>中等</td><td>15</td><td>撬开一把好锁、辨识常见魔法</td></tr>
+                <tr><td>困难</td><td>20</td><td>在暴风雨中游泳、识破精湛的伪装</td></tr>
+                <tr><td>非常困难</td><td>25</td><td>徒手攀爬光滑的城墙</td></tr>
+                <tr><td>几乎不可能</td><td>30</td><td>说服一条古龙献出宝藏</td></tr>
+              </tbody>
+            </table>
+
+            <h4>第三章 · 优势与劣势</h4>
+            <p>优势：掷两个 d20 取较高者。劣势：取较低者。二者同时存在则互相抵消，回到单骰。</p>
+
+            <h4>第四章 · 战斗轮</h4>
+            <ol>
+              <li><b>先攻</b>：所有人掷 d20 + 敏捷调整值，从高到低排序。</li>
+              <li><b>你的回合</b>：可移动（通常 30 尺）+ 执行一个<b>动作</b>（攻击／施法／冲刺／闪避／协助／躲藏／预备／搜索／使用物品）+ 一个<b>附赠动作</b>（若有）+ 一个<b>反应</b>（每轮一次）。</li>
+              <li><b>攻击</b>：d20 + 属性调整值 + 熟练加值 vs 目标 AC。命中后掷伤害骰。自然 20 为重击，伤害骰翻倍；自然 1 必定失手。</li>
+              <li><b>掩体</b>：半身掩体 +2 AC，四分之三掩体 +5 AC。</li>
+            </ol>
+
+            <h4>第五章 · 休息</h4>
+            <p><b>短休</b>（1 小时）：可花费生命骰恢复 HP。 <b>长休</b>（8 小时）：恢复全部 HP 与法术位。</p>
+
+            <h4>第六章 · 六大属性对应的检定</h4>
+            <ul>
+              <li><b>力量</b>：运动 — 攀爬、游泳、推挤、举重</li>
+              <li><b>敏捷</b>：体操、巧手、隐匿 — 平衡、脱身、开锁、潜行</li>
+              <li><b>智力</b>：奥秘、历史、调查、自然、宗教 — 记忆、推理、破译</li>
+              <li><b>感知</b>：驯兽、洞悉、医药、察觉、生存 — 观察、读心、追踪</li>
+              <li><b>魅力</b>：欺瞒、威吓、表演、说服 — 影响他人</li>
+            </ul>
+
+            <h4>第七章 · 桌面的骰子语法</h4>
+            <table class="ref-table">
+              <thead><tr><th>语法</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>.r 2d6+3</code></td><td>掷 2 枚 d6 再加 3</td></tr>
+                <tr><td><code>.r 1d20+5 攻击地精</code></td><td>带备注的掷骰</td></tr>
+                <tr><td><code>.ra 察觉</code></td><td>感知（察觉）检定，DM 会给 DC</td></tr>
+                <tr><td><code>.ra 力量 15</code></td><td>力量检定，对抗 DC 15</td></tr>
+                <tr><td><code>.adv 隐匿</code> / <code>.dis 隐匿</code></td><td>优势 / 劣势检定</td></tr>
+                <tr><td><code>.atk 长剑</code></td><td>武器攻击，自动比对目标 AC</td></tr>
+                <tr><td><code>.hp -8</code> <code>.xp 300</code> <code>.gold +50</code></td><td>直接修正角色卡</td></tr>
+              </tbody>
+            </table>
+
+            <h4>第八章 · 与 AI 地下城主相处</h4>
+            <ul>
+              <li>描述<b>你想做什么</b>，而不是<b>你想掷什么骰</b>。「我想撬开箱子」优于「我要掷巧手」。</li>
+              <li>DM 抛出 <b>[检定]</b> 指令块时，点击它即可自动掷骰并回填结果。</li>
+              <li>卡住时直接问：「周围有什么？」「他刚才说了什么？」DM 会补全场景。</li>
+              <li>不喜欢某个走向，可以按「回溯」按钮，让 DM 重新叙述这一段。</li>
+            </ul>
+
+            <h4>第九章 · 关于数据</h4>
+            <p>所有角色卡、存档、日志都保存在<b>浏览器本地</b>（localStorage）。清理站点数据会一并抹除。API 密钥同样只存在本地，不会上传到任何第三方服务器 —— 它只会被用于你填写的那个接口地址。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── 设置中心 ── -->
+      <section class="view" data-view="settings">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-hd"><h3>🔌 API 连接与服务</h3><button class="btn ghost sm" id="btn-check-api">立即检测</button></div>
+            <div class="card-bd">
+              <label class="field"><span>服务商预设</span>
+                <select id="api-provider"></select>
+              </label>
+              <label class="field"><span>API 地址（OpenAI 兼容）</span><input type="text" id="api-base" placeholder="https://api.openai.com/v1"></label>
+              <label class="field"><span>API Key</span><input type="password" id="api-key" placeholder="sk-..."></label>
+              <div class="row gap">
+                <label class="field grow"><span>叙事主模型</span><input type="text" id="api-model" placeholder="gpt-4o-mini"></label>
+                <button class="btn ghost sm" id="btn-fetch-models">获取模型列表</button>
+              </div>
+              <div class="model-pick" id="model-pick"></div>
+              <label class="field"><span>温度 <b id="temp-val">0.8</b></span><input type="range" id="api-temp" min="0" max="2" step="0.1" value="0.8"></label>
+              <p class="hint">支持 OpenAI、DeepSeek、OpenRouter、硅基流动、月之暗面、智谱 及任意兼容接口。Key 仅存于本地浏览器。</p>
+              <div class="api-status" id="api-status">未检测</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-hd"><h3>🎛️ 桌面与环境</h3><span class="card-tag">Local</span></div>
+            <div class="card-bd">
+              <label class="field"><span>界面主题</span>
+                <div class="seg" id="seg-theme">
+                  <button data-val="dark" class="on">旧日卷帙（暗）</button>
+                  <button data-val="light">羊皮纸（亮）</button>
+                </div>
+              </label>
+              <label class="field"><span>界面字体</span>
+                <div class="seg" id="seg-font">
+                  <button data-val="serif" class="on">古典衬线</button>
+                  <button data-val="sans">现代无衬线</button>
+                </div>
+              </label>
+              <label class="field"><span>对话字号</span>
+                <div class="seg" id="seg-fs">
+                  <button data-val="14">14</button><button data-val="15">15</button>
+                  <button data-val="16" class="on">16</button><button data-val="17">17</button><button data-val="18">18</button>
+                </div>
+              </label>
+              <label class="switch-row"><input type="checkbox" id="set-anim" checked><span>骰点动画与粒子效果</span></label>
+              <label class="switch-row"><input type="checkbox" id="set-texture" checked><span>旧纸噪点纹理</span></label>
+              <label class="switch-row"><input type="checkbox" id="set-autosave" checked><span>每次 DM 回复后自动存档</span></label>
+              <label class="switch-row"><input type="checkbox" id="set-immersive"><span>沉浸模式（隐藏侧栏与队员面板）</span></label>
+              <label class="field"><span>昵称</span><input type="text" id="set-username" placeholder="无名的旅人"></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-hd"><h3>🧰 数据与空间</h3><span class="card-tag">Archive</span></div>
+          <div class="card-bd">
+            <div class="space-bar"><i id="space-fill"></i></div>
+            <p class="muted" id="space-text">统计中…</p>
+            <div class="row gap wrap">
+              <button class="btn ghost" id="btn-recount">重新统计</button>
+              <button class="btn" id="btn-export-all">导出全部数据</button>
+              <button class="btn ghost" id="btn-reset-settings">恢复默认设置</button>
+              <button class="btn danger" id="btn-wipe">清空全部本地数据</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-hd"><h3>ℹ️ 关于</h3></div>
+          <div class="card-bd prose">
+            <p><b>Aeldrin's Table</b> — 地下城主的旧日卷帙 · Ver 1.0.0</p>
+            <p>一个纯粹的本地跑团桌面：无账号、无上传、无遥测。灵感来自桌游广播与旧日档案。</p>
+            <p class="quote">「骰子不撒谎，它只是冷酷。」</p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- 右侧角色面板 -->
+  <aside class="sheet-panel" id="sheet-panel">
+    <div class="sp-inner" id="sp-inner"></div>
+  </aside>
+</div>
+
+<!-- 浮动层 -->
+<div id="dice-layer"></div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
