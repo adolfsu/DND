@@ -50,6 +50,7 @@ html[data-theme="light"]{
 
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{
   background:var(--bg);
   color:var(--ink);
@@ -57,8 +58,12 @@ body{
   font-size:16px;
   line-height:1.72;
   -webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;
   overflow:hidden;
+  overscroll-behavior:none;
 }
+img,svg,video,canvas{max-width:100%}
+button,input,select,textarea{font-family:inherit}
 html[data-font="sans"] body{
   font-family:"Inter","PingFang SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
   line-height:1.65;
@@ -113,7 +118,7 @@ body::after{
 .boot-log{font-size:12px;color:#6d6151;letter-spacing:.08em;min-height:20px}
 
 /* ═══ 布局 ═══ */
-#app{position:relative;z-index:1;display:grid;grid-template-columns:var(--rail-w) 1fr var(--sheet-w);height:100vh}
+#app{position:relative;z-index:1;display:grid;grid-template-columns:var(--rail-w) 1fr var(--sheet-w);height:100vh;height:100dvh}
 html[data-immersive="on"] #app{grid-template-columns:0 1fr 0}
 html[data-immersive="on"] .rail,html[data-immersive="on"] .sheet-panel{opacity:0;pointer-events:none}
 
@@ -176,7 +181,7 @@ html[data-immersive="on"] .rail,html[data-immersive="on"] .sheet-panel{opacity:0
 .topbar p{font-size:11.5px;color:var(--ink-3);letter-spacing:.04em}
 .tb-title{min-width:0;flex:1}
 .tb-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
-.only-mobile{display:none}
+.only-mobile,.icon-btn.only-mobile{display:none}
 
 .scroll{flex:1;overflow-y:auto;padding:24px 26px 60px;scroll-behavior:smooth}
 .view{display:none;animation:fade .34s var(--ease)}
@@ -327,8 +332,12 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;heigh
 
 /* ═══ 跑团桌面 ═══ */
 .table-wrap{display:grid;grid-template-columns:1fr 268px;gap:18px;align-items:start}
-@media(max-width:1180px){.table-wrap{grid-template-columns:1fr}.side-col{display:none}}
-.chat-col{display:flex;flex-direction:column;height:calc(100vh - 150px);min-height:440px;
+/* 窄笔记本：侧栏改为横排落到聊天区下方（>1000px 仍可见，≤1000px 转为底部抽屉） */
+@media(max-width:1180px){
+  .table-wrap{grid-template-columns:1fr}
+  .side-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;align-content:start}
+}
+.chat-col{display:flex;flex-direction:column;height:calc(100vh - 150px);height:calc(100dvh - 150px);min-height:440px;
   background:linear-gradient(170deg,var(--panel),var(--bg-2));
   border:1px solid var(--line-soft);border-radius:var(--r-l);box-shadow:var(--shadow);overflow:hidden}
 .chat-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line-soft);background:linear-gradient(90deg,rgba(200,164,94,.07),transparent)}
@@ -808,13 +817,15 @@ html[data-theme="light"] .sp-av{background:linear-gradient(145deg,#e8dcc4,#d6c6a
 
 /* ═══ 响应式 ═══ */
 @media(max-width:1000px){
-  #app{grid-template-columns:0 1fr 0}
+  /* 左右两翼转为 fixed 抽屉后已脱离网格流，主舞台必须独占唯一的列 */
+  #app{grid-template-columns:1fr}
+  html[data-immersive="on"] #app{grid-template-columns:1fr}
   .rail{position:fixed;left:0;top:0;bottom:0;width:250px;z-index:800;transform:translateX(-100%);transition:transform .3s var(--ease)}
   .rail.open{transform:none;opacity:1;box-shadow:0 0 60px rgba(0,0,0,.7)}
   .sheet-panel{position:fixed;right:0;top:0;bottom:0;width:min(330px,88vw);z-index:800;transform:translateX(100%);transition:transform .3s var(--ease);opacity:1 !important}
   .sheet-panel.open{transform:none;box-shadow:0 0 60px rgba(0,0,0,.7)}
   html[data-immersive="on"] .sheet-panel{opacity:1}
-  .only-mobile{display:grid}
+  .only-mobile,.icon-btn.only-mobile{display:grid}
   .topbar{padding:12px 16px}
   .scroll{padding:16px 14px 70px}
   .form-grid,.ab-edit{grid-template-columns:1fr 1fr}
@@ -823,4 +834,225 @@ html[data-theme="light"] .sp-av{background:linear-gradient(145deg,#e8dcc4,#d6c6a
   .chat-log{padding:14px}
   .chat-hint{display:none}
   .ws-grid{grid-template-columns:repeat(3,1fr)}
+}
+
+/* ══════════════════════════════════════════
+   移动端适配 · Mobile / Touch
+   —— 左导航、右侧角色面板、桌面侧栏统统收进抽屉；
+      跑团桌面铺满可视区，弹窗转全屏，输入框防缩放。
+   ══════════════════════════════════════════ */
+
+/* 仅移动端出现的元素 */
+.m-flex,.m-block,.m-grid{display:none}
+
+/* 抽屉遮罩 */
+.scrim{
+  position:fixed;inset:0;z-index:780;
+  background:rgba(6,5,4,.66);
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);
+  opacity:0;visibility:hidden;
+  transition:opacity .28s var(--ease),visibility .28s var(--ease);
+}
+.scrim.on{opacity:1;visibility:visible}
+
+@media(max-width:1000px){
+  .m-flex{display:flex}
+  .m-block{display:block}
+  .m-grid{display:grid}
+
+  /* 视图切换只做淡入，不用 translate —— 避免给 fixed 抽屉制造包含块 */
+  .view.on{animation:fadeM .2s var(--ease)}
+  @keyframes fadeM{from{opacity:0}to{opacity:1}}
+
+  /* ── 安全区与视口 ── */
+  #app{height:100vh;height:100dvh}
+  .topbar{padding:10px 14px;padding-top:calc(10px + env(safe-area-inset-top,0px))}
+  .scroll{padding:14px 13px calc(24px + env(safe-area-inset-bottom,0px));-webkit-overflow-scrolling:touch}
+
+  /* ── 左导航：抽屉 ── */
+  .rail{
+    width:min(272px,84vw);
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  .rail-brand{padding:16px 14px 13px}
+  .rail-x{margin-left:auto}
+  html[data-immersive="on"] .rail.open{opacity:1;pointer-events:auto}
+
+  /* ── 右侧角色面板：抽屉 ── */
+  .sheet-panel{
+    display:flex;flex-direction:column;overflow:hidden;
+    width:min(344px,90vw);
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  .sp-bar{
+    flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:11px 13px;border-bottom:1px solid var(--line-soft);
+    background:linear-gradient(90deg,rgba(200,164,94,.09),transparent 70%);
+  }
+  .sp-bar b{font-size:13.5px;color:var(--brass);letter-spacing:.05em}
+  .sp-inner{flex:1;min-height:0;overflow-y:auto;padding:14px}
+  html[data-immersive="on"] .sheet-panel.open{opacity:1;pointer-events:auto}
+
+  /* ── 桌面侧栏：底部抽屉 ── */
+  .side-col{
+    display:flex !important;flex-direction:column;gap:12px;
+    position:fixed;left:0;right:0;bottom:0;z-index:820;
+    max-height:80dvh;overflow-y:auto;
+    padding:0 12px calc(16px + env(safe-area-inset-bottom,0px));
+    background:linear-gradient(180deg,var(--panel),var(--bg-2));
+    border-top:1px solid var(--line);border-radius:18px 18px 0 0;
+    box-shadow:0 -22px 60px rgba(0,0,0,.66);
+    transform:translateY(112%);
+    transition:transform .34s var(--ease);
+  }
+  .side-col.open{transform:none}
+  .side-col .card.compact{border-radius:var(--r-m)}
+  .drawer-hd{
+    position:sticky;top:0;z-index:2;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    margin:0 -12px 0;padding:16px 13px 11px;
+    background:var(--panel);
+    border-bottom:1px solid var(--line-soft);
+    border-radius:18px 18px 0 0;
+  }
+  .drawer-hd::after{content:"";position:absolute;top:7px;left:50%;transform:translateX(-50%);width:40px;height:3px;border-radius:3px;background:var(--line)}
+  .drawer-hd b{font-size:13.5px;color:var(--brass);letter-spacing:.05em}
+
+  /* ── 跑团桌面：铺满可视区，只让聊天区内部滚动 ── */
+  .scroll.table-mode{padding:0;overflow:hidden}
+  .view[data-view="table"].on{height:100%;display:flex;flex-direction:column}
+  .view[data-view="table"].on .table-wrap{flex:1;min-height:0;align-items:stretch}
+  .view[data-view="table"].on .chat-col{
+    height:100%;min-height:0;
+    border-radius:0;border-left:0;border-right:0;box-shadow:none;
+  }
+  .chat-head{flex-wrap:wrap;gap:8px;padding:9px 12px}
+  .ch-actions{
+    flex:1 1 auto;flex-wrap:nowrap;justify-content:flex-end;
+    overflow-x:auto;padding-bottom:3px;scrollbar-width:none;
+  }
+  .ch-actions::-webkit-scrollbar{display:none}
+  /* 空桌面文案在可视区内垂直居中（safe：内容过高时回退为顶对齐） */
+  .chat-log:has(> .empty){justify-content:safe center}
+  .chat-log{padding:14px 13px}
+  .chat-input{padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px))}
+  .chat-input textarea{min-height:42px;max-height:110px}
+  .chat-quick{padding:0 12px 9px;max-height:66px}
+  .msg{max-width:94%}
+
+  /* ── 弹窗：转全屏 ── */
+  #modal-root{padding:0}
+  .modal,.modal.narrow,.modal.wide{width:100%;max-width:100%;height:100dvh;max-height:100dvh;border-radius:0;border:0}
+  .modal-hd{padding:13px 15px;padding-top:calc(13px + env(safe-area-inset-top,0px))}
+  .modal-hd h3{font-size:15px}
+  .modal-bd{padding:15px}
+  .modal-ft{padding:11px 15px calc(11px + env(safe-area-inset-bottom,0px));flex-wrap:wrap}
+  .modal-ft .btn{flex:1 1 auto;min-width:118px}
+  .wiz-steps{gap:5px}
+  .wiz-list{max-height:340px}
+
+  /* ── 表单：16px 防 iOS 聚焦自动放大 ── */
+  input[type=text],input[type=password],input[type=number],input[type=search],select,textarea{font-size:16px}
+  .aw select,.aw input,.hpbox input{font-size:16px}
+  .ab-edit .ae input{font-size:16px}
+  select{background-position:calc(100% - 16px) 50%,calc(100% - 11px) 50%}
+
+  /* ── Toast ── */
+  #toast-root{bottom:calc(env(safe-area-inset-bottom,0px) + 20px)}
+}
+
+@media(max-width:560px){
+  /* 聊天头部：模块名独占一行，按钮条成横向滑动条 */
+  .ch-mod{flex:1 1 100%}
+  .ch-actions{flex:1 1 100%;justify-content:flex-start}
+  /* 栅格降为单列 */
+  .grid-2,.grid-3,.form-grid,.ab-edit,.char-grid,.save-grid,.group-bd{grid-template-columns:1fr}
+  .ab-wiz,.align-grid{grid-template-columns:1fr 1fr}
+  .ws-grid{grid-template-columns:repeat(3,1fr)}
+  .sk-picker{grid-template-columns:1fr 1fr;gap:5px}
+  .hero{padding:26px 12px 20px}
+  .hero-modes{gap:12px;margin-top:22px}
+  .mode-card{padding:17px}
+  .mode-card p{min-height:0}
+  .hero-stat{gap:18px}
+  .card-bd{padding:15px}
+  .ref-table{font-size:11.5px}
+  .ref-table th,.ref-table td{padding:6px 7px}
+  .mech-table th{width:82px}
+  .prose h4{margin-top:16px}
+  .prose ul,.prose ol{margin-left:16px}
+  .novel-read{padding:16px 15px;font-size:13.5px}
+  .modal-list{max-height:none}
+  .boot-title{font-size:clamp(17px,6.2vw,26px);letter-spacing:.2em}
+  .boot-sub{font-size:9.5px;letter-spacing:.1em}
+  .brand-text span{letter-spacing:.1em}
+  .dice-card{min-width:0;width:100%}
+  #toast-root{left:3vw;right:3vw;width:auto;transform:none}
+  .toast{width:100%;text-align:center;font-size:12.5px;padding:9px 16px}
+  .side-col{max-height:86dvh}
+  .sp-name{font-size:15px}
+}
+
+/* ── 触屏设备：放大点按区域、常显功能按钮 ── */
+@media(hover:none),(pointer:coarse){
+  .cc-del{opacity:1}
+  .btn{min-height:42px}
+  .btn.sm{min-height:36px;padding:7px 12px}
+  .icon-btn{width:42px;height:42px;font-size:16px}
+  .send-btn{width:46px;height:46px}
+  .chip-btn{padding:8px 14px;font-size:12.5px}
+  .sc-btn{padding:7px 13px;font-size:12px}
+  .nav-item{padding:12px 13px;font-size:14.5px}
+  .nav-item i{font-size:16px}
+  .seg button{padding:9px 10px}
+  .mk{padding:9px 15px}
+  .pt-item{padding:10px 9px}
+  .rs-item{padding:12px 11px}
+  .rs-item input{width:20px;height:20px;flex:0 0 20px}
+  .sk-row{padding:9px 8px}
+  .mp-item{padding:11px 12px}
+  .cb-item{padding:9px 9px}
+  .ml-item{padding:13px 13px}
+  .align-cell{padding:11px 12px}
+  .ab-cell{padding:10px 4px}
+  .wiz-step{padding:8px 14px}
+  .wiz-li{padding:10px 12px}
+  .mode-card:hover,.char-card:hover,.save-card:hover,.btn:hover{transform:none}
+  input[type=range]{height:6px}
+  input[type=range]::-webkit-slider-thumb{width:22px;height:22px}
+  .switch-row{padding:12px 0}
+  .switch-row input{width:44px;height:24px}
+  .switch-row input::after{width:18px;height:18px;top:3px;left:3px}
+  .switch-row input:checked::after{left:23px}
+  .x-btn{width:36px;height:36px;font-size:16px}
+}
+
+/* ── 横屏手机 ── */
+@media(max-width:1000px) and (orientation:landscape) and (max-height:560px){
+  .topbar{padding-top:calc(6px + env(safe-area-inset-top,0px));padding-bottom:6px}
+  .topbar h2{font-size:16px}
+  .topbar p{display:none}
+  .hero{padding:18px 12px 14px}
+  .hero-desc{font-size:13px}
+  .hero-modes{grid-template-columns:1fr 1fr}
+  .side-col{max-height:94dvh}
+  .rail{width:min(240px,70vw)}
+  .modal{height:100dvh}
+  .wiz-list{max-height:240px}
+  .sk-list{max-height:200px}
+  .chat-log .empty{padding:12px 10px}
+  .chat-log .empty p{margin:2px 0}
+}
+
+/* ── 平板竖屏（宽但非桌面布局）── */
+@media(min-width:761px) and (max-width:1000px){
+  .grid-3{grid-template-columns:repeat(3,1fr)}
+  .char-grid{grid-template-columns:repeat(auto-fill,minmax(238px,1fr))}
+  .save-grid,.group-bd{grid-template-columns:repeat(auto-fill,minmax(266px,1fr))}
+  .form-grid,.ab-edit{grid-template-columns:1fr 1fr}
+  .modal{width:min(720px,94vw);height:auto;max-height:90dvh;border-radius:var(--r-l);border:1px solid var(--line)}
+  #modal-root{padding:18px}
+  .modal-bd{padding:20px}
 }

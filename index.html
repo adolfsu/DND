@@ -2,9 +2,16 @@
 <html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <title>AELDRIN'S TABLE — 地下城主的旧日卷帙 · D&D 5e</title>
 <meta name="description" content="AI 担任地下城主的 D&D 5e 单人跑团桌面：角色卡、骰点检定、先攻战斗、模组导入、存档回廊、冒险札记。">
+<meta name="theme-color" content="#0c0a08" id="meta-theme">
+<meta name="color-scheme" content="dark light">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Aeldrin">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="format-detection" content="telephone=no,email=no,address=no">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -32,6 +39,9 @@
 <!-- ═══════════ 主壳 ═══════════ -->
 <div id="app" class="hidden">
 
+  <!-- 移动端抽屉遮罩 -->
+  <div class="scrim" id="scrim"></div>
+
   <!-- 左侧导航 -->
   <aside class="rail" id="rail">
     <div class="rail-brand">
@@ -40,6 +50,7 @@
         <b>AELDRIN</b>
         <span>D&amp;D 5E TABLE</span>
       </div>
+      <button class="x-btn m-flex rail-x" id="btn-rail-close" aria-label="关闭菜单" title="关闭">✕</button>
     </div>
 
     <nav class="rail-nav" id="rail-nav">
@@ -138,6 +149,8 @@
                 <b id="ch-mod-name">未载入模组</b>
               </div>
               <div class="ch-actions">
+                <button class="chip-btn m-flex" id="btn-m-party">🧭 队员</button>
+                <button class="chip-btn m-flex" id="btn-m-sheet">🧝 角色</button>
                 <button class="chip-btn" id="btn-roll-panel">🎲 骰盘</button>
                 <button class="chip-btn" id="btn-combat">⚔️ 先攻</button>
                 <button class="chip-btn" id="btn-save">💾 存档</button>
@@ -158,7 +171,11 @@
             </div>
           </div>
 
-          <div class="side-col">
+          <div class="side-col" id="side-col">
+            <div class="drawer-hd m-flex">
+              <b>🧭 队员 · 先攻 · 行囊</b>
+              <button class="x-btn" id="btn-side-close" aria-label="关闭侧栏" title="关闭">✕</button>
+            </div>
             <div class="card compact">
               <div class="card-hd"><h3>🧭 队员</h3><span class="card-tag" id="party-tag">0 名</span></div>
               <div class="card-bd" id="party-list"></div>
@@ -470,6 +487,10 @@
 
   <!-- 右侧角色面板 -->
   <aside class="sheet-panel" id="sheet-panel">
+    <div class="sp-bar m-flex">
+      <b>🧝 角色卡</b>
+      <button class="x-btn" id="btn-sp-close" aria-label="关闭角色卡" title="关闭">✕</button>
+    </div>
     <div class="sp-inner" id="sp-inner"></div>
   </aside>
 </div>

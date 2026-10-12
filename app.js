@@ -735,9 +735,33 @@ function setView(v) {
   if (v === 'saves') renderSaves();
   if (v === 'novel') renderNovel();
   if (v === 'settings') renderSettings();
-  $('#rail').classList.remove('open');
+  // 跑团桌面在手机上铺满可视区（仅内部滚动），其余视图保持页面滚动
+  $('#views').classList.toggle('table-mode', v === 'table');
+  closeDrawers();
 }
 window.goto_ = setView;
+
+/* ── 移动端抽屉：左导航 / 右侧角色面板 / 桌面侧栏 ── */
+const MOBILE_BP = 1000;
+function isMobile() { return window.innerWidth <= MOBILE_BP; }
+function drawerEls() { return [$('#rail'), $('#sheet-panel'), $('#side-col')].filter(Boolean); }
+function syncScrim() {
+  const sc = $('#scrim');
+  if (!sc) return;
+  sc.classList.toggle('on', isMobile() && drawerEls().some(el => el.classList.contains('open')));
+}
+function closeDrawers() {
+  drawerEls().forEach(el => el.classList.remove('open'));
+  syncScrim();
+}
+function openDrawer(sel) {
+  const el = typeof sel === 'string' ? $(sel) : sel;
+  if (!el || !isMobile()) return;
+  drawerEls().forEach(x => x !== el && x.classList.remove('open'));
+  el.classList.add('open');
+  syncScrim();
+}
+window.closeDrawers = closeDrawers;
 
 /* ─────────────── 7. 视图：大厅 ─────────────── */
 
@@ -975,7 +999,6 @@ function renderSheet() {
   const c = activeChar(); const box = $('#sp-inner');
   if (!c) {
     box.innerHTML = `<div class="sp-empty"><i class="e-ico">🧝</i>未选中角色。<br>在「角色档案」创建，或在「仪式准备」点名入队。</div>`;
-    if (window.innerWidth <= 1000) { /* noop */ }
     return;
   }
   const hpPct = clamp((c.hp / c.maxHp) * 100, 0, 100);
@@ -1046,9 +1069,12 @@ function renderSheet() {
       <button class="chip-btn" onclick="toggleSheetMobile_()">↔ 收起</button>
     </div>`;
 }
-window.toggleSheetMobile_ = () => $('#sheet-panel').classList.toggle('open');
+window.toggleSheetMobile_ = () => {
+  const el = $('#sheet-panel');
+  if (el.classList.contains('open')) closeDrawers(); else openDrawer(el);
+};
 window.openSheetChar_ = id => { state.activeCharId = id; persist(); setView('table'); renderSheet(); showDiceSheetHint(); };
-function showDiceSheetHint(){ if (window.innerWidth <= 1000) $('#sheet-panel').classList.add('open'); }
+function showDiceSheetHint(){ openDrawer('#sheet-panel'); }
 window.longRest_ = id => {
   const c = getChar(id); if (!c) return;
   c.hp = c.maxHp; c.tempHp = 0;
@@ -2190,8 +2216,22 @@ function bind() {
   // 导航
   $$('.nav-item').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
   $('#rail-user').addEventListener('click', () => setView('settings'));
-  $('#btn-menu').addEventListener('click', () => $('#rail').classList.toggle('open'));
+  $('#btn-menu').addEventListener('click', () => {
+    const el = $('#rail');
+    if (el.classList.contains('open')) closeDrawers(); else openDrawer(el);
+  });
   $$('[data-goto]').forEach(b => b.addEventListener('click', () => setView(b.dataset.goto)));
+
+  // 移动端抽屉开关
+  $('#scrim').addEventListener('click', closeDrawers);
+  $('#btn-rail-close').addEventListener('click', closeDrawers);
+  $('#btn-sp-close').addEventListener('click', closeDrawers);
+  $('#btn-side-close').addEventListener('click', closeDrawers);
+  $('#btn-m-party').addEventListener('click', () => {
+    renderPartySide(); renderCombat(); renderBag();
+    openDrawer('#side-col');
+  });
+  $('#btn-m-sheet').addEventListener('click', () => { renderSheet(); openDrawer('#sheet-panel'); });
 
   // 桌面
   $('#btn-send').addEventListener('click', sendChat);
@@ -2301,8 +2341,17 @@ function bind() {
 
   // 键盘
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { closeModal(); $('#rail').classList.remove('open'); $('#sheet-panel').classList.remove('open'); }
+    if (e.key === 'Escape') { closeModal(); closeDrawers(); }
   });
+
+  // 视口变化：变宽（或旋屏到横屏桌面式布局）时收起抽屉并清掉遮罩
+  let resizeTimer = null;
+  const onViewportChange = () => {
+    if (!isMobile()) drawerEls().forEach(el => el.classList.remove('open'));
+    syncScrim();
+  };
+  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(onViewportChange, 140); });
+  window.addEventListener('orientationchange', () => setTimeout(onViewportChange, 280));
 }
 function bindSeg(sel, fn) {
   $$(sel + ' button').forEach(b => b.addEventListener('click', () => {
@@ -2320,6 +2369,9 @@ function applySettings() {
   document.documentElement.dataset.fs = st.fontSize;
   document.documentElement.dataset.tex = st.texture ? 'on' : 'off';
   document.documentElement.dataset.immersive = st.immersive ? 'on' : 'off';
+  // 移动端浏览器地址栏配色跟随主题
+  const metaTheme = $('#meta-theme');
+  if (metaTheme) metaTheme.setAttribute('content', st.theme === 'light' ? '#efe6d4' : '#0c0a08');
 }
 
 async function fetchModels() {
