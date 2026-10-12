@@ -138,6 +138,7 @@
             <h4>v1.0.0 初始频段</h4>
             <ul>
               <li><b>D&amp;D 5e 规则引擎</b>：六维属性、18 项技能、熟练加值、优势／劣势、AC 与先攻、等级与经验曲线。</li>
+              <li><b>主动检定</b>：想到要做什么，点一下技能名（或 🎯 检定）就掷，优势／劣势、DC 皆可选；掷骰会连同一句「我打算……」的意图交给 DM，由它裁定成败并叙述后果。</li>
               <li><b>AI 地下城主</b>：支持任意 OpenAI 兼容接口，流式叙事；回复中的 <code>[检定: 察觉|DC 15]</code> 会变成可点击的骰点按钮。</li>
               <li><b>模组导入</b>：把 .txt / .md / .json 剧本喂给 DM，它会照着你的故事走。</li>
               <li><b>记忆回廊</b>：本地存档、导入导出、随时回溯读取。</li>
@@ -159,6 +160,8 @@
               <div class="ch-actions">
                 <button class="chip-btn m-flex" id="btn-m-party">🧭 队员</button>
                 <button class="chip-btn m-flex" id="btn-m-sheet">🧝 角色</button>
+                <button class="chip-btn" id="btn-check-panel">🎯 检定</button>
+                <button class="chip-btn" id="btn-ability">📜 能力</button>
                 <button class="chip-btn" id="btn-roll-panel">🎲 骰盘</button>
                 <button class="chip-btn" id="btn-combat">⚔️ 先攻</button>
                 <button class="chip-btn" id="btn-save">💾 存档</button>
@@ -168,14 +171,14 @@
             <div class="chat-log" id="chat-log"></div>
             <div class="chat-quick" id="chat-quick"></div>
             <div class="chat-input">
-              <textarea id="chat-text" rows="1" placeholder="描述你的行动，或输入 .ra 察觉 15 进行检定…"></textarea>
+              <textarea id="chat-text" rows="1" placeholder="写下你的行动，再点上方技能名掷骰；或直接描述剧情"></textarea>
               <div class="ci-side">
                 <button class="icon-btn" id="btn-dice-quick" title="掷骰 d20">🎲</button>
                 <button class="send-btn" id="btn-send" title="发送">➤</button>
               </div>
             </div>
             <div class="chat-hint">
-              <kbd>.r 2d6+3</kbd> 掷骰 · <kbd>.ra 察觉 15</kbd> 检定 · <kbd>.atk 长剑</kbd> 攻击 · <kbd>.hp -8</kbd> 扣血 · <kbd>.xp 300</kbd> 经验 · 直接输入剧情即为 RP
+              <b>先在输入框写下你要做什么，再点上方技能名</b> —— 骰子和意图会一起交给 DM · <b>📜 能力</b> 用职业特性／法术位 · <b>⚔️ 战斗</b> 管理先攻与敌人 HP · <kbd>.atk 长剑 &gt; 地精A</kbd> 攻击指定目标 · <kbd>.use 回气</kbd> 用特性 · <kbd>.cast 火球术</kbd> 施法 · <kbd>.short</kbd> 短休 · <kbd>.long</kbd> 长休
             </div>
           </div>
 
@@ -424,21 +427,76 @@
               <li><b>魅力</b>：欺瞒、威吓、表演、说服 — 影响他人</li>
             </ul>
 
-            <h4>第七章 · 桌面的骰子语法</h4>
+            <h4>第七章 · 谁掷这颗骰子</h4>
+            <p>牌桌上的规矩很简单：<b>谁控制那个角色，谁掷它的骰子。</b></p>
+            <table class="ref-table">
+              <thead><tr><th>掷什么</th><th>谁掷</th><th>在哪儿掷</th></tr></thead>
+              <tbody>
+                <tr><td>你的属性／技能／豁免检定</td><td><b>你</b></td><td>🎯 我要行动，或直接点技能条</td></tr>
+                <tr><td>你的攻击与伤害</td><td><b>你</b></td><td><code>.atk 长剑 &gt; 地精A</code></td></tr>
+                <tr><td>你使用特性／法术产生的骰子</td><td><b>你</b></td><td>📜 能力、📖 法术库</td></tr>
+                <tr><td>敌人的攻击、豁免、伤害</td><td><b>DM</b></td><td>🜂 DM 掷骰台，或点 DM 给出的掷骰按钮</td></tr>
+                <tr><td>随机表（天气、遭遇、掉落）</td><td><b>DM</b></td><td>🜂 DM 掷骰台</td></tr>
+                <tr><td>你不该知道的暗掷（潜行是否被察觉）</td><td><b>DM 私下</b></td><td>🌑 暗掷，数值默认折叠</td></tr>
+              </tbody>
+            </table>
+            <p class="muted">每张骰点卡片左上角都标着 <b>🜍 玩家掷</b> 或 <b>🜂 DM 掷</b>，不会混淆。DM 不会自己编数字 —— 它输出「掷骰请求」，由牌桌真正掷出去，再把结果交回给它叙述。</p>
+            <p><b>判定与结算</b>：DM 的回复下方会单独划出一块「⚖ 判定与结算」，把掷骰按钮、判定说明和数值结算集中放在那里，与上面的场景叙事分开看。</p>
+
+            <h4>第八章 · 桌面的骰子语法</h4>
             <table class="ref-table">
               <thead><tr><th>语法</th><th>说明</th></tr></thead>
               <tbody>
                 <tr><td><code>.r 2d6+3</code></td><td>掷 2 枚 d6 再加 3</td></tr>
-                <tr><td><code>.r 1d20+5 攻击地精</code></td><td>带备注的掷骰</td></tr>
                 <tr><td><code>.ra 察觉</code></td><td>感知（察觉）检定，DM 会给 DC</td></tr>
                 <tr><td><code>.ra 力量 15</code></td><td>力量检定，对抗 DC 15</td></tr>
                 <tr><td><code>.adv 隐匿</code> / <code>.dis 隐匿</code></td><td>优势 / 劣势检定</td></tr>
-                <tr><td><code>.atk 长剑</code></td><td>武器攻击，自动比对目标 AC</td></tr>
+                <tr><td><code>.atk 长剑 &gt; 地精A</code></td><td>攻击指定目标，命中后自动扣它的血</td></tr>
+                <tr><td><code>.atk 长弓 15</code></td><td>攻击，手动指定 AC 15</td></tr>
+                <tr><td><code>.use 回气</code> <code>.use 偷袭</code></td><td>使用职业特性，自动扣资源</td></tr>
+                <tr><td><code>.cast 火球术</code></td><td>施放法术，自动扣法术位</td></tr>
+                <tr><td><code>.short</code> <code>.long</code></td><td>短休 / 长休，恢复资源与法术位</td></tr>
+                <tr><td><code>.init 地精A 12 7 15</code></td><td>把敌人加入先攻（名称 先攻 HP AC）</td></tr>
+                <tr><td><code>.dmg 地精A 8</code> <code>.heal 莉安 6</code></td><td>对指定目标扣血 / 回血</td></tr>
+                <tr><td><code>.cond 中毒</code> <code>.cond 解除 中毒</code></td><td>施加 / 解除状态</td></tr>
+                <tr><td><code>.dmr 地精A &gt; 莉安</code></td><td>DM 掷：敌人攻击（真掷，自动取怪物表的加值与伤害）</td></tr>
+                <tr><td><code>.dmr 地精A DC 13 +1</code></td><td>DM 掷：敌方豁免 / 检定</td></tr>
+                <tr><td><code>.dmr 1d20 天气</code></td><td>DM 掷：任意随机表</td></tr>
+                <tr><td><code>.hid 莉安 察觉 15</code></td><td>DM 暗掷：玩家看不到数值</td></tr>
                 <tr><td><code>.hp -8</code> <code>.xp 300</code> <code>.gold +50</code></td><td>直接修正角色卡</td></tr>
               </tbody>
             </table>
 
-            <h4>第八章 · 与 AI 地下城主相处</h4>
+            <h4>第九章 · 职业特性与资源</h4>
+            <p>每个职业的招牌特性都是<b>可点击执行的</b>：在右侧角色面板的「能力」区，或点桌面上的 <b>📜 能力</b>。点一下就会自动掷骰、扣除资源，并把结果发到桌上交给 DM。</p>
+            <table class="ref-table">
+              <thead><tr><th>资源</th><th>归属</th><th>恢复方式</th></tr></thead>
+              <tbody>
+                <tr><td>狂暴</td><td>野蛮人（2 次起，随等级增加）</td><td>长休</td></tr>
+                <tr><td>回气 · 动作如潮 · 不屈</td><td>战士</td><td>短休 / 长休</td></tr>
+                <tr><td>圣疗池（5 × 等级点）</td><td>圣武士</td><td>长休补满</td></tr>
+                <tr><td>引导神力</td><td>牧师（6 级起 2 次）</td><td>短休 / 长休</td></tr>
+                <tr><td>野性形态</td><td>德鲁伊</td><td>短休 / 长休</td></tr>
+                <tr><td>气（等于等级）</td><td>武僧</td><td>短休 / 长休</td></tr>
+                <tr><td>诗人激励</td><td>吟游诗人（等于魅力调整值）</td><td>短休 / 长休</td></tr>
+                <tr><td>术法点</td><td>术士（等于等级）</td><td>长休</td></tr>
+                <tr><td>奥术恢复</td><td>法师</td><td>长休</td></tr>
+              </tbody>
+            </table>
+            <p><b>法术位</b>：全施法者（吟游诗人／牧师／德鲁伊／术士／法师）与半施法者（圣武士／游侠）按标准表推进；邪术师使用<b>魔契法术位</b>，短休即可恢复。施法点「📖 法术库」，选一条法术即自动扣除对应环级的法术位。</p>
+            <p><b>生命骰</b>：短休时可以花费生命骰回血（掷 1d&lt;生命骰&gt; + 体质调整值），长休后回复一半。</p>
+
+            <h4>第十章 · 战斗怎么打</h4>
+            <ol>
+              <li><b>布阵</b>：点 <b>⚔️ 战斗</b> →「＋ 添加敌人」，可以从常见怪物里挑，也可以自己填 HP / AC / 数量。</li>
+              <li><b>掷先攻</b>：点「掷先攻并开始」，所有角色与敌人按 d20 + 敏捷调整值排序。</li>
+              <li><b>你出手</b>：在输入框写 <code>.atk 长剑 &gt; 地精A</code>，命中后伤害会<b>自动扣到那个敌人身上</b>。也可以用右侧面板点特性／法术。</li>
+              <li><b>敌人还手</b>：敌人那侧的骰子归 DM 掷。点 <b>🜂 DM 掷骰台</b> 选目标掷攻击，或直接点 DM 在「判定与结算」里给出的掷骰按钮 —— 牌桌会真的掷 d20+加值对抗 AC，命中就扣血。</li>
+              <li><b>轮转</b>：控制台里点「下一回合」，被击倒的单位会自动变灰。</li>
+            </ol>
+            <p class="muted">控制台里每个单位的先攻、名称、AC、HP 都可以直接改；−1 / −5 / +5 是常用快捷扣血。</p>
+
+            <h4>第十一章 · 与 AI 地下城主相处</h4>
             <ul>
               <li>描述<b>你想做什么</b>，而不是<b>你想掷什么骰</b>。「我想撬开箱子」优于「我要掷巧手」。</li>
               <li>DM 抛出 <b>[检定]</b> 指令块时，点击它即可自动掷骰并回填结果。</li>
@@ -446,7 +504,7 @@
               <li>不喜欢某个走向，可以按「回溯」按钮，让 DM 重新叙述这一段。</li>
             </ul>
 
-            <h4>第九章 · 关于数据</h4>
+            <h4>第十二章 · 关于数据</h4>
             <p>所有角色卡、存档、日志都保存在<b>浏览器本地</b>（localStorage）。清理站点数据会一并抹除。API 密钥同样只存在本地，不会上传到任何第三方服务器 —— 它只会被用于你填写的那个接口地址。</p>
             <p><b>联机时</b>，房间里交换的内容（发言、骰点、角色卡变更）会用房间码派生的密钥做 AES-GCM 端到端加密，再经过公共中转节点转发。中转节点只能看到一段密文，看不到内容；但请把它当作「房间号即暗号」—— 把邀请链接发给信任的人。</p>
           </div>
@@ -499,6 +557,7 @@
               <label class="switch-row"><input type="checkbox" id="set-anim" checked><span>骰点动画与粒子效果</span></label>
               <label class="switch-row"><input type="checkbox" id="set-texture" checked><span>旧纸噪点纹理</span></label>
               <label class="switch-row"><input type="checkbox" id="set-autosave" checked><span>每次 DM 回复后自动存档</span></label>
+              <label class="switch-row"><input type="checkbox" id="set-narrate" checked><span>掷完检定后，由 DM 接着叙述结果（关掉则只记录骰点）</span></label>
               <label class="switch-row"><input type="checkbox" id="set-immersive"><span>沉浸模式（隐藏侧栏与队员面板）</span></label>
               <label class="field"><span>昵称</span><input type="text" id="set-username" placeholder="无名的旅人"></label>
             </div>

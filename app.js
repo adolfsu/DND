@@ -463,6 +463,275 @@ const BUILTIN_MODULE = {
 - 熔炉祭司不会立刻开战：他会先邀请玩家「一起点燃世界」，玩家拒绝后才进入战斗。`
 };
 
+/* ─────────────── 1b. 职业特性 · 资源池 · 法术位 · 状态 ─────────────── */
+
+/* 资源池：实际余量存在角色的 c.res[key]；上限由等级（与属性）推导。
+   rec = 恢复方式：long 长休／short 短休或长休／none 不自动恢复
+   pool = true 表示这是「点数额度」（如圣疗池），不是一个一个的次数 */
+const RES_DEFS = {
+  rage:         { name:'狂暴',     icon:'🔥', rec:'long',  max: lv => lv >= 20 ? 99 : lv >= 17 ? 6 : lv >= 12 ? 5 : lv >= 6 ? 4 : lv >= 3 ? 3 : 2, use:'每次长休后恢复全部次数（20 级后不限）' },
+  second_wind:  { name:'回气',     icon:'💨', rec:'short', max: () => 1, use:'每次短休或长休后恢复' },
+  action_surge: { name:'动作如潮', icon:'⚡', rec:'short', max: lv => lv >= 17 ? 2 : 1, use:'每次短休或长休后恢复' },
+  indomitable:  { name:'不屈',     icon:'🛡️', rec:'long',  max: lv => lv >= 17 ? 3 : lv >= 13 ? 2 : 1, use:'每次长休后恢复' },
+  divine_sense: { name:'神圣感知', icon:'✨', rec:'long',  max: (lv, c) => 1 + Math.max(1, MOD(c.ab.cha)), use:'每次长休后恢复' },
+  lay_on_hands: { name:'圣疗池',   icon:'🕊️', rec:'long',  min: lv => 5 * lv, max: lv => 5 * lv, pool: true, use:'每日圣疗点数 = 5 × 圣武士等级，长休后补满' },
+  channel:      { name:'引导神力', icon:'📿', rec:'short', max: lv => lv >= 6 ? 2 : 1, use:'每次短休或长休后恢复' },
+  wild_shape:   { name:'野性形态', icon:'🐺', rec:'short', max: lv => lv >= 20 ? 99 : 2, use:'每次短休或长休后恢复 2 次' },
+  inspiration:  { name:'诗人激励', icon:'🎵', rec:'short', max: (lv, c) => Math.max(1, MOD(c.ab.cha)), use:'次数 = 魅力调整值（至少 1），短休或长休后恢复' },
+  ki:           { name:'气',       icon:'🌀', rec:'short', max: lv => lv, use:'气点 = 武僧等级，短休或长休后回满' },
+  sorcery:      { name:'术法点',   icon:'🔮', rec:'long',  max: lv => Math.max(0, lv), use:'术法点 = 术士等级，长休后回满' },
+  arcane_recovery:{ name:'奥术恢复', icon:'📖', rec:'long', max: () => 1, use:'每次长休后恢复一次（可用于在短休时回收法术位）' },
+};
+
+const KI_DIE = lv => (lv >= 17 ? '1d10' : lv >= 11 ? '1d8' : lv >= 5 ? '1d6' : '1d4');
+const MARTIAL_ARTS_DIE = KI_DIE;
+const INSP_DIE = lv => (lv >= 15 ? 'd12' : lv >= 10 ? 'd10' : lv >= 5 ? 'd8' : 'd6');
+const SNEAK_DIE = lv => Math.ceil(lv / 2);
+
+/* 特性：act = action 动作／bonus 附赠动作／reaction 反应／free 自由（不占动作）／passive 被动（自动生效）
+   exec.kind = note 播报／heal 治疗／roll 掷骰／attacks 多次攻击／smite 神圣重击／ac 改变 AC／rest 休息相关／recover 恢复资源 */
+const CLASS_FEATURES = {
+  '野蛮人': [
+    { id:'rage', name:'狂暴', lv:1, act:'bonus', icon:'🔥', res:'rage',
+      desc:'附赠动作进入狂暴：近战伤害 +2，受到钝击／穿刺／挥砍伤害减半，持续 1 分钟。',
+      exec:{ kind:'buff', text:'进入狂暴 —— 近战伤害 +2，受到钝击／穿刺／挥砍伤害减半，持续 1 分钟。' } },
+    { id:'unarmored_barb', name:'无甲防御', lv:1, act:'passive', icon:'🛡️',
+      desc:'不着甲且不持盾时，AC = 10 + 敏捷调整值 + 体质调整值。',
+      exec:{ kind:'ac', mode:'barb' } },
+    { id:'reckless', name:'鲁莽攻击', lv:2, act:'free', icon:'⚔️',
+      desc:'本回合你的近战攻击具有优势；但直到下回合开始，针对你的攻击也具有优势。',
+      exec:{ kind:'note', text:'鲁莽攻击 —— 本回合近战攻击具有优势，但直到下回合开始，针对你的攻击也具有优势。' } },
+    { id:'danger_sense', name:'危险感知', lv:2, act:'passive', icon:'👁️',
+      desc:'对你看得见的危险（陷阱、法术等）进行敏捷豁免时具有优势。', exec:{ kind:'note' } },
+    { id:'extra_attack_barb', name:'额外攻击', lv:5, act:'passive', icon:'⚔️',
+      desc:'每当你执行攻击动作，可以攻击两次。', exec:{ kind:'note' } },
+  ],
+  '战士': [
+    { id:'second_wind', name:'回气', lv:1, act:'bonus', icon:'💨', res:'second_wind',
+      desc:'附赠动作回复 1d10 + 战士等级 点生命。',
+      exec:{ kind:'heal', dice:'1d10', plus:'level' } },
+    { id:'extra_attack_fighter', name:'额外攻击', lv:5, act:'passive', icon:'⚔️',
+      desc:'攻击动作可攻击两次（11 级起三次，20 级起四次）。', exec:{ kind:'note' } },
+    { id:'action_surge', name:'动作如潮', lv:2, act:'free', icon:'⚡', res:'action_surge',
+      desc:'本回合额外获得一个动作（不能用于施法）。',
+      exec:{ kind:'note', text:'动作如潮 —— 本回合额外获得一个动作（不能用于施法）。' } },
+    { id:'indomitable', name:'不屈', lv:9, act:'free', icon:'🛡️', res:'indomitable',
+      desc:'重掷一次失败的豁免检定，必须使用新的结果。',
+      exec:{ kind:'note', text:'不屈 —— 重掷这次失败的豁免，必须采用新的结果。' } },
+  ],
+  '圣武士': [
+    { id:'divine_sense', name:'神圣感知', lv:1, act:'action', icon:'✨', res:'divine_sense',
+      desc:'一个动作感知 60 尺内的天界生物、邪魔与不死生物（以及被祝圣／亵渎的地与物），持续到你的下个回合结束。',
+      exec:{ kind:'note', text:'神圣感知 —— 感知 60 尺内的天界生物、邪魔与不死生物，以及被祝圣／亵渎的地与物。' } },
+    { id:'lay_on_hands', name:'圣疗', lv:1, act:'action', icon:'🕊️', res:'lay_on_hands',
+      desc:'用圣疗池中的点数治疗（1 点 = 1 HP），也可花 5 点解除一项疾病或毒素。',
+      exec:{ kind:'poolheal' } },
+    { id:'divine_smite', name:'神圣重击', lv:2, act:'free', icon:'🌅', slot:true,
+      desc:'命中后消耗一个法术位，额外造成 2d8 + 每超过 1 环 1d8 的光耀伤害。',
+      exec:{ kind:'smite' } },
+    { id:'extra_attack_pal', name:'额外攻击', lv:5, act:'passive', icon:'⚔️',
+      desc:'攻击动作可攻击两次。', exec:{ kind:'note' } },
+    { id:'aura', name:'守护光环', lv:6, act:'passive', icon:'💫',
+      desc:'你与 10 尺内友善生物的所有豁免获得 + 魅力调整值的加值。', exec:{ kind:'note' } },
+  ],
+  '游侠': [
+    { id:'favored_enemy', name:'宿敌', lv:1, act:'passive', icon:'🎯',
+      desc:'你对所选的宿敌类型进行生存追踪与智力回忆时具有优势。', exec:{ kind:'note' } },
+    { id:'extra_attack_rng', name:'额外攻击', lv:5, act:'passive', icon:'⚔️',
+      desc:'攻击动作可攻击两次。', exec:{ kind:'note' } },
+    { id:'primeval', name:'原初意识', lv:3, act:'passive', icon:'🌿',
+      desc:'你可以用感知检定侦测附近的特殊生物，或感知污染与异变。', exec:{ kind:'note' } },
+    { id:'ranger_rest', name:'自然疗愈', lv:1, act:'rest', icon:'🌱',
+      desc:'短休时你额外恢复一部分生命（约每级 2 点）。',
+      exec:{ kind:'recover', res:'ranger_rest', text:'自然疗愈 —— 短休额外恢复少量生命' } },
+  ],
+  '盗贼': [
+    { id:'sneak', name:'偷袭', lv:1, act:'free', icon:'🗡️',
+      desc:'攻击具有优势、或目标旁边有你的队友时，额外造成 1d6 伤害，每两级 +1d6。',
+      exec:{ kind:'roll', label:'偷袭伤害', dice:'sneak' } },
+    { id:'cunning', name:'灵巧动作', lv:2, act:'bonus', icon:'🌪️',
+      desc:'附赠动作执行疾走、撤离或躲藏。',
+      exec:{ kind:'note', text:'灵巧动作 —— 附赠动作执行疾走、撤离或躲藏。' } },
+    { id:'uncanny', name:'直觉闪避', lv:5, act:'reaction', icon:'💫',
+      desc:'当你被看得见的攻击命中时，反应使该次攻击的伤害减半。',
+      exec:{ kind:'note', text:'直觉闪避 —— 该次攻击对你的伤害减半。' } },
+  ],
+  '武僧': [
+    { id:'unarmored_monk', name:'无甲防御', lv:1, act:'passive', icon:'🛡️',
+      desc:'不着甲且不持盾时，AC = 10 + 敏捷调整值 + 感知调整值。',
+      exec:{ kind:'ac', mode:'monk' } },
+    { id:'flurry', name:'连击', lv:2, act:'bonus', icon:'👊', res:'ki',
+      desc:'附赠动作消耗 1 点气，进行两次徒手打击。',
+      exec:{ kind:'attacks', n:2, dice:'martial', bonus:'dex' } },
+    { id:'patient', name:'坚强防御', lv:2, act:'bonus', icon:'🧘', res:'ki',
+      desc:'附赠动作消耗 1 点气，本回合执行闪避动作。',
+      exec:{ kind:'note', text:'坚强防御 —— 消耗 1 点气，本回合执行闪避动作。' } },
+    { id:'step_wind', name:'步如疾风', lv:2, act:'bonus', icon:'🌬️', res:'ki',
+      desc:'附赠动作消耗 1 点气，执行疾走并撤离。',
+      exec:{ kind:'note', text:'步如疾风 —— 消耗 1 点气，执行疾走并撤离。' } },
+    { id:'stunning', name:'震慑拳', lv:5, act:'free', icon:'💥', res:'ki',
+      desc:'命中后消耗 1 点气，目标需通过体质豁免，否则被震慑到你的下回合结束。',
+      exec:{ kind:'note', text:'震慑拳 —— 目标须通过体质豁免，否则被震慑（失能且无法移动，对你的攻击具有优势）。' } },
+    { id:'extra_attack_monk', name:'额外攻击', lv:5, act:'passive', icon:'⚔️',
+      desc:'攻击动作可攻击两次。', exec:{ kind:'note' } },
+  ],
+  '吟游诗人': [
+    { id:'inspiration', name:'诗人激励', lv:1, act:'bonus', icon:'🎵', res:'inspiration',
+      desc:'附赠动作给 60 尺内一名可见生物一颗激励骰，他可在任意一次属性检定、攻击检定或豁免中使用并加上它。',
+      exec:{ kind:'inspire' } },
+    { id:'jack', name:'万事通', lv:2, act:'passive', icon:'🎓',
+      desc:'任何你没有熟练加值的属性检定，加上一半熟练加值（向下取整）。', exec:{ kind:'note' } },
+    { id:'expertise', name:'专精', lv:3, act:'passive', icon:'🏅',
+      desc:'选择两项已有熟练的技能，熟练加值翻倍。', exec:{ kind:'note' } },
+    { id:'countercharm', name:'反迷惑曲', lv:6, act:'action', icon:'🎶',
+      desc:'一个动作表演，使 30 尺内友善生物对抗恐慌与魅惑的豁免具有优势。', exec:{ kind:'note' } },
+  ],
+  '牧师': [
+    { id:'channel_divinity', name:'引导神力', lv:2, act:'action', icon:'📿', res:'channel',
+      desc:'引导神力行一次神迹（如驱散不死）。',
+      exec:{ kind:'channel' } },
+    { id:'blessed_strikes', name:'神圣打击', lv:8, act:'passive', icon:'⚔️',
+      desc:'每回合一次，武器攻击命中后额外造成 1d8 光耀（或黯蚀）伤害。', exec:{ kind:'note' } },
+    { id:'divine_intervention', name:'神圣干预', lv:10, act:'action', icon:'🌠',
+      desc:'请求你的神祇直接干预，成功则 DM 决定效果。', exec:{ kind:'note' } },
+  ],
+  '德鲁伊': [
+    { id:'wild_shape', name:'野性形态', lv:2, act:'bonus', icon:'🐺', res:'wild_shape',
+      desc:'附赠动作变身成你已经见过的野兽，形态生命独立计算。',
+      exec:{ kind:'note', text:'野性形态 —— 变身为见过的野兽，形态生命独立计算。' } },
+    { id:'druid_restore', name:'自然恢复', lv:1, act:'free', icon:'🌱',
+      desc:'短休时可用 1 次自然恢复，回收一部分法术位。',
+      exec:{ kind:'note', text:'自然恢复 —— 短休时回收一部分法术位。' } },
+  ],
+  '术士': [
+    { id:'font_magic', name:'术法点转换', lv:2, act:'free', icon:'🔮', res:'sorcery',
+      desc:'在本回合内，用术法点换取一个法术位，或消耗一个法术位换取术法点。',
+      exec:{ kind:'sorcery' } },
+    { id:'metamagic', name:'超魔法', lv:3, act:'free', icon:'🌀', res:'sorcery',
+      desc:'消耗术法点改变法术形态（强效／成双／迅捷／延长／细致／强化／无形／孪生）。',
+      exec:{ kind:'metamagic' } },
+  ],
+  '法师': [
+    { id:'arcane_recovery', name:'奥术恢复', lv:1, act:'free', icon:'📖', res:'arcane_recovery',
+      desc:'短休时回收部分已消耗的法术位（总环数 = 法师等级一半，向上取整，且不超过 5 环）。',
+      exec:{ kind:'arcane' } },
+    { id:'spell_mastery', name:'法术精通', lv:18, act:'passive', icon:'🌟',
+      desc:'选择一个 1 环与一个 2 环法术，可以随意施展（不消耗法术位）。', exec:{ kind:'note' } },
+  ],
+  '邪术师': [
+    { id:'pact_rest', name:'魔契恢复', lv:1, act:'rest', icon:'🌑',
+      desc:'你的魔契法术位在短休或长休后全部恢复。', exec:{ kind:'note' } },
+    { id:'invocation', name:'邪术祈唤', lv:2, act:'passive', icon:'👁️',
+      desc:'你习得若干永久性的祈唤（如魔能爆的强化、黑暗视觉、伪装术）。', exec:{ kind:'note' } },
+    { id:'eldritch_blast', name:'魔能爆', lv:1, act:'action', icon:'💫',
+      desc:'招牌远程法术：1d10 力场伤害，5 级起分裂成两束，11 级三束。',
+      exec:{ kind:'attacks', n:'blast', dice:'1d10', bonus:'cha', label:'魔能爆' } },
+    { id:'mystic_arcanum', name:'神秘奥秘', lv:11, act:'free', icon:'📜', slot:true,
+      desc:'用一个魔契法术位施展 6 环及以上的奥秘法术（每次长休只能各施展一次）。',
+      exec:{ kind:'note', text:'神秘奥秘 —— 施展一个 6 环及以上的奥秘法术。' } },
+  ],
+};
+
+/* 施法职业的法术位进度。full 全施法者／half 半施法者／pact 魔契法术位 */
+const CASTER_KIND = {
+  '吟游诗人':'full', '牧师':'full', '德鲁伊':'full', '术士':'full', '法师':'full',
+  '圣武士':'half', '游侠':'half',
+  '邪术师':'pact', '野蛮人':'none', '战士':'none', '盗贼':'none', '武僧':'none',
+};
+const SPELL_SLOTS_FULL = [
+  [0], [2], [3], [4,2], [4,3], [4,3,2], [4,3,3], [4,3,3,1], [4,3,3,2], [4,3,3,3,1],
+  [4,3,3,3,2], [4,3,3,3,2,1], [4,3,3,3,2,1], [4,3,3,3,2,1,1], [4,3,3,3,2,1,1],
+  [4,3,3,3,2,1,1,1], [4,3,3,3,2,1,1,1], [4,3,3,3,2,1,1,1,1], [4,3,3,3,3,1,1,1,1], [4,3,3,3,3,2,1,1,1],
+];
+const SPELL_SLOTS_HALF = [
+  [0], [0], [2], [3], [3], [4,2], [4,2], [4,3], [4,3], [4,3,2],
+  [4,3,2], [4,3,3], [4,3,3], [4,3,3,1], [4,3,3,1], [4,3,3,2], [4,3,3,2], [4,3,3,3,1], [4,3,3,3,1], [4,3,3,3,2],
+];
+/* 魔契法术位：[槽位数, 法术位环级] */
+const PACT_MAGIC = [
+  [0,0], [1,1], [2,1], [2,2], [2,2], [2,3], [2,3], [2,4], [2,4], [2,5],
+  [2,5], [3,5], [3,5], [3,5], [3,5], [3,5], [3,5], [4,5], [4,5], [4,5], [4,5],
+];
+
+/* 状态（Condition）：部分状态会自动给你的检定施加劣势 */
+const CONDITIONS = [
+  { k:'中毒',   icon:'🤢', dis:true,  desc:'攻击检定与属性检定具有劣势。' },
+  { k:'恐慌',   icon:'😱', dis:true,  desc:'恐惧源在视线内时，攻击检定与属性检定具有劣势，且不能主动靠近。' },
+  { k:'目盲',   icon:'🌑', dis:true,  desc:'看不见；需要视觉的检定自动失败，你的攻击具有劣势。' },
+  { k:'束缚',   icon:'⛓️', dis:true,  desc:'速度归零；针对你的攻击具有优势，你的敏捷豁免具有劣势。' },
+  { k:'中毒(强)', icon:'☠️', dis:true, desc:'攻击与属性检定具有劣势，且无法恢复生命。' },
+  { k:'倒地',   icon:'⬇️', dis:false, desc:'只能匍匐移动；近战攻击针对你具有优势，远程攻击具有劣势。' },
+  { k:'失能',   icon:'🚫', dis:false, desc:'不能进行动作或附赠动作。' },
+  { k:'麻痹',   icon:'🧊', dis:false, desc:'失能且无法移动；针对你的攻击具有优势，近战命中即重击。' },
+  { k:'昏迷',   icon:'💫', dis:false, desc:'失能、无法移动、倒地且无意识。' },
+  { k:'擒抱',   icon:'🤝', dis:false, desc:'速度归零。' },
+  { k:'束缚(捆)', icon:'🪢', dis:false, desc:'被绳索或铁链固定，逃脱需进行力量或敏捷检定。' },
+  { k:'隐形',   icon:'👻', dis:false, desc:'看不见你的生物对你的攻击具有劣势，你的攻击具有优势。' },
+  { k:'专注',   icon:'🎯', dis:false, desc:'正在维持一个需要专注的法术；受伤时须进行体质豁免。' },
+  { k:'祝福',   icon:'🌟', dis:false, desc:'攻击检定与豁免加 1d4。' },
+  { k:'狂暴',   icon:'🔥', dis:false, desc:'近战伤害 +2，受到钝击／穿刺／挥砍伤害减半。' },
+];
+const COND_MAP = {};
+CONDITIONS.forEach(c => COND_MAP[c.k] = c);
+
+/* 法术速查库：施法者可以直接点选，自动扣一个法术位并把结果发到桌面 */
+const SPELL_LIB = [
+  { n:'火焰箭', lv:0, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'120 尺', d:'远程法术攻击，命中造成 1d10 火焰伤害（5 级 2d10，11 级 3d10，17 级 4d10）。' },
+  { n:'寒冰射线', lv:0, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'60 尺', d:'远程法术攻击，1d8 寒冷伤害，并使其速度降低 10 尺。' },
+  { n:'电爪', lv:0, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'触及', d:'近战法术攻击，1d8 闪电伤害，目标不能进行借机攻击。' },
+  { n:'毒雾', lv:0, sch:'咒法', cls:['德鲁伊','术士','法师'], t:'1 动作', r:'10 尺', d:'目标体质豁免失败则受 1d12 毒素伤害。' },
+  { n:'圣火', lv:0, sch:'塑能', cls:['牧师'], t:'1 动作', r:'60 尺', d:'目标敏捷豁免失败则受 1d8 光耀伤害，获得半身掩体。' },
+  { n:'神导术', lv:0, sch:'预言', cls:['牧师','德鲁伊'], t:'1 动作', r:'触及', d:'目标一次属性检定获得 1d4 加值。' },
+  { n:'魔法伎俩', lv:0, sch:'变化', cls:['吟游诗人','术士','法师','邪术师'], t:'1 动作', r:'30 尺', d:'制造无害的感官小效果，如微光、声响、气味。' },
+  { n:'修复术', lv:0, sch:'变化', cls:['吟游诗人','牧师','德鲁伊','法师'], t:'1 分钟', r:'触及', d:'修复一件物品的裂痕或破损。' },
+  { n:'次级幻影', lv:0, sch:'幻术', cls:['吟游诗人','术士','法师','邪术师'], t:'1 动作', r:'30 尺', d:'制造一个声音或一个不超过 5 尺立方的幻影。' },
+  { n:'燃火术', lv:0, sch:'塑能', cls:['德鲁伊'], t:'1 动作', r:'自身', d:'掌中燃起火焰，可照明或投掷造成 1d8 火焰伤害。' },
+  { n:'治疗真言', lv:1, sch:'塑能', cls:['吟游诗人','牧师','德鲁伊'], t:'1 附赠动作', r:'60 尺', d:'治疗一个可见生物 1d4 + 施法属性调整值 点生命。' },
+  { n:'魔法飞弹', lv:1, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'120 尺', d:'三枚飞弹，每枚 1d4+1 力场伤害，必定命中；每高一环多一枚。' },
+  { n:'护盾术', lv:1, sch:'防护', cls:['术士','法师'], t:'1 反应', r:'自身', d:'被命中时 AC 加 5 直到你的下回合开始，并免疫魔法飞弹。' },
+  { n:'治疗术', lv:1, sch:'塑能', cls:['吟游诗人','牧师','德鲁伊','游侠','圣武士'], t:'1 动作', r:'触及', d:'治疗 2d8 + 施法属性调整值 点生命；每高一环多 1d8。' },
+  { n:'祝福术', lv:1, sch:'附幻', cls:['牧师','圣武士'], t:'1 动作', r:'30 尺', d:'最多三个生物的攻击检定与豁免加 1d4，专注 1 分钟。' },
+  { n:'灼热射线', lv:1, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'120 尺', d:'三次远程法术攻击，每次 1d6 火焰伤害；每高一环多一道射线。' },
+  { n:'脚底抹油', lv:1, sch:'变化', cls:['吟游诗人','术士','法师'], t:'1 附赠动作', r:'触及', d:'目标速度增加 10 尺，持续 1 小时。' },
+  { n:'隐匿术', lv:1, sch:'幻术', cls:['吟游诗人','术士','法师'], t:'1 动作', r:'自身', d:'使一个生物（含物品）隐形到攻击或施法为止。' },
+  { n:'不谐低语', lv:1, sch:'附幻', cls:['吟游诗人'], t:'1 动作', r:'60 尺', d:'感知豁免失败则受 3d6 心灵伤害，且必须用反应远离你。' },
+  { n:'猎人印记', lv:1, sch:'预言', cls:['游侠'], t:'1 附赠动作', r:'90 尺', d:'标记目标，你对他每次命中额外造成 1d6 伤害，专注 1 小时。' },
+  { n:'神圣惩罚', lv:1, sch:'塑能', cls:['圣武士'], t:'1 动作', r:'自身', d:'下次武器命中额外造成 1d8 光耀伤害，并可能使目标恐惧。' },
+  { n:'魔能爆', lv:1, sch:'塑能', cls:['邪术师'], t:'1 动作', r:'120 尺', d:'远程法术攻击，1d10 力场伤害。' },
+  { n:'心灵之矛', lv:1, sch:'附幻', cls:['术士','法师','邪术师'], t:'1 动作', r:'60 尺', d:'感知豁免失败受 3d6 心灵伤害并失去反应。' },
+  { n:'燃烧之手', lv:1, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'15 尺锥形', d:'锥形范围内所有生物敏捷豁免，失败受 3d6 火焰伤害，成功减半。' },
+  { n:'雷霆波', lv:1, sch:'塑能', cls:['吟游诗人','德鲁伊','术士','法师'], t:'1 动作', r:'15 尺立方', d:'体质豁免失败受 2d8 雷鸣伤害并被推开 10 尺。' },
+  { n:'无声幻影', lv:1, sch:'幻术', cls:['吟游诗人','术士','法师'], t:'1 动作', r:'60 尺', d:'制造一个 15 尺立方的视觉幻象，专注 10 分钟。' },
+  { n:'治愈术', lv:2, sch:'塑能', cls:['吟游诗人','牧师','德鲁伊','游侠'], t:'1 动作', r:'60 尺', d:'治疗三个生物各 2d8 + 施法属性调整值 点生命。' },
+  { n:'烧伤术', lv:2, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'60 尺', d:'敏捷豁免失败受 4d6 火焰伤害并燃烧。' },
+  { n:'隐形术', lv:2, sch:'幻术', cls:['吟游诗人','术士','法师'], t:'1 动作', r:'触及', d:'目标隐形 1 小时，或直到攻击／施法。' },
+  { n:'镜像术', lv:2, sch:'幻术', cls:['术士','法师'], t:'1 动作', r:'自身', d:'制造三个幻影分身，使攻击有概率打偏。' },
+  { n:'束缚术', lv:2, sch:'变化', cls:['术士','法师'], t:'1 动作', r:'60 尺', d:'目标力量豁免失败则被魔法束缚、无法移动，专注 1 分钟。' },
+  { n:'定身术', lv:2, sch:'附幻', cls:['吟游诗人','牧师','德鲁伊','术士','法师'], t:'1 动作', r:'60 尺', d:'类人生物感知豁免失败则麻痹，专注 1 分钟。' },
+  { n:'灵能武器', lv:2, sch:'塑能', cls:['牧师'], t:'1 附赠动作', r:'60 尺', d:'召唤悬浮武器，每回合可用附赠动作攻击 1d8 + 施法属性调整值。' },
+  { n:'熊之坚韧', lv:2, sch:'变化', cls:['德鲁伊'], t:'1 动作', r:'触及', d:'目标获得 2d6 临时生命，专注 1 小时。' },
+  { n:'月华箭', lv:2, sch:'塑能', cls:['德鲁伊'], t:'1 附赠动作', r:'120 尺', d:'感知豁免失败受 2d10 光耀伤害，具有优势对战兽形。' },
+  { n:'蛛网术', lv:2, sch:'咒法', cls:['术士','法师'], t:'1 动作', r:'60 尺', d:'20 尺方形布满蛛网，敏捷豁免失败则被束缚。' },
+  { n:'暗淡术', lv:2, sch:'幻术', cls:['吟游诗人','术士','法师','邪术师'], t:'1 动作', r:'自身', d:'5 尺半径内轻度遮蔽，专注 10 分钟。' },
+  { n:'火球术', lv:3, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'150 尺', d:'20 尺半径内敏捷豁免，失败受 8d6 火焰伤害，成功减半。' },
+  { n:'闪电束', lv:3, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'100 尺', d:'100 尺长 5 尺宽直线，敏捷豁免失败受 8d6 闪电伤害。' },
+  { n:'解除魔法', lv:3, sch:'防护', cls:['吟游诗人','牧师','德鲁伊','圣武士','术士','法师','邪术师'], t:'1 动作', r:'120 尺', d:'终止目标身上的法术效果（3 环及以上需检定）。' },
+  { n:'飞行术', lv:3, sch:'变化', cls:['术士','法师','邪术师'], t:'1 动作', r:'触及', d:'目标获得飞行速度 60 尺，持续 10 分钟。' },
+  { n:'群体治疗真言', lv:3, sch:'塑能', cls:['牧师'], t:'1 附赠动作', r:'60 尺', d:'治疗 60 尺内最多六个生物各 1d4 + 施法属性调整值。' },
+  { n:'活化亡灵', lv:3, sch:'死灵', cls:['牧师','法师','邪术师'], t:'1 分钟', r:'10 尺', d:'将一具尸骸或骨堆变为你的亡灵仆从。' },
+  { n:'加速术', lv:3, sch:'变化', cls:['术士','法师'], t:'1 动作', r:'30 尺', d:'目标速度翻倍、AC +2、多一个受限动作，专注 1 分钟。' },
+  { n:'减速术', lv:3, sch:'变化', cls:['术士','法师'], t:'1 动作', r:'120 尺', d:'最多六个生物感知豁免失败则速度减半、AC −2。' },
+  { n:'放逐术', lv:4, sch:'防护', cls:['牧师','圣武士','术士','法师','邪术师'], t:'1 动作', r:'60 尺', d:'魅力豁免失败则被放逐至异界，专注 1 分钟。' },
+  { n:'变形术', lv:4, sch:'变化', cls:['吟游诗人','德鲁伊','术士','法师'], t:'1 动作', r:'60 尺', d:'目标变为一只野兽，其属性被替换，专注 1 小时。' },
+  { n:'烈焰冲击', lv:4, sch:'塑能', cls:['术士','法师'], t:'1 动作', r:'120 尺', d:'敏捷豁免失败受 7d8 火焰伤害，成功减半。' },
+  { n:'冰风暴', lv:4, sch:'塑能', cls:['德鲁伊','术士','法师'], t:'1 动作', r:'300 尺', d:'20 尺半径内敏捷豁免失败受 2d8 钝击 + 4d6 寒冷伤害。' },
+  { n:'医疗术', lv:5, sch:'塑能', cls:['吟游诗人','牧师','德鲁伊'], t:'1 动作', r:'60 尺', d:'治疗一个生物 4d8 + 施法属性调整值 点生命。' },
+  { n:'焰击术', lv:5, sch:'塑能', cls:['牧师'], t:'1 动作', r:'60 尺', d:'敏捷豁免失败受 5d6 火焰与 5d6 光耀伤害。' },
+  { n:'死云术', lv:5, sch:'咒法', cls:['术士','法师'], t:'1 动作', r:'120 尺', d:'20 尺半径毒云，体质豁免失败受 5d8 毒素伤害。' },
+  { n:'心灵铸锁', lv:5, sch:'附幻', cls:['吟游诗人','术士','法师','邪术师'], t:'1 动作', r:'60 尺', d:'智力豁免失败受 7d8 心灵伤害且速度减半。' },
+  { n:'群体治疗术', lv:5, sch:'塑能', cls:['牧师','德鲁伊'], t:'1 动作', r:'60 尺', d:'最多六个生物各恢复 3d8 + 施法属性调整值 点生命。' },
+];
+
 /* ─────────────── 2. 工具 ─────────────── */
 
 const $  = (s, r = document) => r.querySelector(s);
@@ -520,7 +789,7 @@ const DEFAULT_SETTINGS = {
   anim: true, texture: true, autoSave: true, immersive: false,
   username: '无名的旅人',
   style: '史诗奇幻（经典英雄）', pov: '第二人称（你）', difficulty: '标准（DM 公平裁定）',
-  diceOn: true, markerOn: true
+  diceOn: true, markerOn: true, narrate: true
 };
 
 let state = {
@@ -621,7 +890,9 @@ function newChar(patch = {}) {
     abBase: { str:10, dex:10, con:10, int:10, wis:10, cha:10 },
     proficient: [], hp: 0, maxHp: 0, tempHp: 0, ac: 14, speed: 30, hitDie: 10,
     gold: 30, inv: ['长剑', '皮甲', '背包', '干粮 ×5', '火把 ×3'], spells: [], notes: '', avatar: '',
-    conditions: [], hpManual: false, acManual: false
+    conditions: [], hpManual: false, acManual: false,
+    res: {}, resMax: {}, slots: {}, slotsMax: {}, pact: null, pactMax: null,
+    hitDice: 0, hdMax: 0
   };
   Object.assign(c, patch);
   // abBase 永远表示「未加种族加值」的基础值；调用方给的 ab 是最终值
@@ -693,6 +964,9 @@ function syncDerived(c) {
   c.hp = clamp(c.hp || c.maxHp, 0, c.maxHp);
   const r = RACES[c.race];
   if (r) c.speed = r.speed;
+  // 资源池、法术位、生命骰跟着等级与职业走
+  if (!c.conditions) c.conditions = [];
+  syncResources(c); syncSpellSlots(c); syncHitDice(c);
   return c;
 }
 
@@ -719,6 +993,840 @@ function getChar(id) { return state.chars.find(c => c.id === id) || null; }
 function activeChar() { return getChar(state.activeCharId) || getChar(state.partyIds[0]) || null; }
 function party() { return state.partyIds.map(getChar).filter(Boolean); }
 function levelFromXp(xp) { let l = 1; for (let i = 0; i < XP_TABLE.length; i++) if (xp >= XP_TABLE[i]) l = i + 1; return clamp(l, 1, 20); }
+
+/* ─────────────── 5b. 能力引擎：资源池 · 特性 · 法术位 · 状态 · 战斗目标 ─────────────── */
+
+/* ── 武器表：不再靠名字猜伤害骰 ── */
+const WEAPONS = {
+  '匕首':     { dmg:'1d4',  type:'穿刺', finesse:true, light:true, rng:'20/60' },
+  '短剑':     { dmg:'1d6',  type:'穿刺', finesse:true, light:true },
+  '弯刀':     { dmg:'1d6',  type:'挥砍', finesse:true, light:true },
+  '细剑':     { dmg:'1d8',  type:'穿刺', finesse:true },
+  '鞭':       { dmg:'1d4',  type:'挥砍', finesse:true, reach:true },
+  '飞刀':     { dmg:'1d4',  type:'穿刺', finesse:true, rng:'20/60' },
+  '手斧':     { dmg:'1d6',  type:'挥砍', light:true, rng:'20/60' },
+  '手弩':     { dmg:'1d6',  type:'穿刺', rng:'30/120', two:true },
+  '短弓':     { dmg:'1d6',  type:'穿刺', rng:'80/320', two:true },
+  '投石索':   { dmg:'1d4',  type:'钝击', rng:'30/120' },
+  '长棍':     { dmg:'1d6',  type:'钝击', versatile:'1d8' },
+  '长矛':     { dmg:'1d6',  type:'穿刺', versatile:'1d8', reach:true, rng:'20/60' },
+  '三叉戟':   { dmg:'1d6',  type:'穿刺', versatile:'1d8', rng:'20/60' },
+  '硬头锤':   { dmg:'1d6',  type:'钝击' },
+  '钉头锤':   { dmg:'1d6',  type:'穿刺' },
+  '长剑':     { dmg:'1d8',  type:'挥砍', versatile:'1d10' },
+  '战斧':     { dmg:'1d8',  type:'挥砍', versatile:'1d10' },
+  '战锤':     { dmg:'1d8',  type:'钝击', versatile:'1d10' },
+  '轻弩':     { dmg:'1d8',  type:'穿刺', rng:'80/320', two:true },
+  '长弓':     { dmg:'1d8',  type:'穿刺', rng:'150/600', two:true },
+  '巨棍':     { dmg:'1d8',  type:'钝击', two:true },
+  '戟':       { dmg:'1d10', type:'挥砍', two:true, reach:true },
+  '重弩':     { dmg:'1d10', type:'穿刺', rng:'100/400', two:true },
+  '巨斧':     { dmg:'1d12', type:'挥砍', two:true },
+  '巨剑':     { dmg:'2d6',  type:'挥砍', two:true },
+  '徒手打击': { dmg:'1',    type:'钝击' },
+};
+/* 表里没有的武器：按名字给一个合理猜测 */
+function guessWeapon(name) {
+  if (/巨|双手/.test(name)) return { dmg:'2d6', type:'挥砍', two:true, guess:true };
+  if (/匕首|飞刀/.test(name)) return { dmg:'1d4', type:'穿刺', finesse:true, guess:true };
+  if (/弓|弩/.test(name)) return { dmg:'1d8', type:'穿刺', rng:'80/320', guess:true };
+  if (/短/.test(name)) return { dmg:'1d6', type:'穿刺', light:true, guess:true };
+  return { dmg:'1d8', type:'挥砍', guess:true };
+}
+function weaponOf(name) {
+  const w = WEAPONS[name];
+  return w ? { ...w, name } : { ...guessWeapon(name), name };
+}
+/* 攻击加值所用的属性：灵巧武器取力或敏中较高者，远程取敏捷，余者取力量 */
+function weaponAbility(c, w) {
+  if (w.ab) return w.ab;
+  if (w.rng) return 'dex';
+  if (w.finesse) return MOD(c.ab.dex) >= MOD(c.ab.str) ? 'dex' : 'str';
+  return 'str';
+}
+
+/* ── 资源池 ── */
+
+function charResKeys(c) {
+  const keys = [], lv = c.level || 1;
+  (CLASS_FEATURES[c.cls] || []).forEach(f => {
+    if (f.res && (f.lv || 1) <= lv && !keys.includes(f.res)) keys.push(f.res);
+  });
+  return keys;
+}
+function maxRes(c, key) {
+  const d = RES_DEFS[key];
+  return d && d.max ? Math.max(0, d.max(c.level || 1, c)) : 0;
+}
+/* 同步资源池：首次解锁补满；等级变化时把新增的额度补上；换职业则清掉旧池 */
+function syncResources(c) {
+  if (!c.res) c.res = {};
+  if (!c.resMax) c.resMax = {};
+  const keys = charResKeys(c);
+  keys.forEach(k => {
+    const mx = maxRes(c, k), prev = c.resMax[k];
+    if (prev === undefined || c.res[k] === undefined) c.res[k] = mx;
+    else if (mx > prev) c.res[k] = clamp(c.res[k] + (mx - prev), 0, mx);
+    else c.res[k] = clamp(c.res[k], 0, mx);
+    c.resMax[k] = mx;
+  });
+  Object.keys(c.resMax).forEach(k => { if (!keys.includes(k)) { delete c.resMax[k]; delete c.res[k]; } });
+  return c.res;
+}
+function resList(c) {
+  return charResKeys(c).filter(k => RES_DEFS[k]).map(k => ({
+    k, name: RES_DEFS[k].name, icon: RES_DEFS[k].icon,
+    cur: c.res[k] || 0, max: c.resMax[k] !== undefined ? c.resMax[k] : maxRes(c, k),
+    rec: RES_DEFS[k].rec, pool: !!RES_DEFS[k].pool
+  }));
+}
+function spendRes(c, k, n) {
+  n = n || 1;
+  if ((c.res[k] || 0) < n) return false;
+  c.res[k] -= n;
+  return true;
+}
+
+/* ── 法术位 ── */
+
+function syncSpellSlots(c) {
+  const kind = CASTER_KIND[c.cls] || 'none';
+  const lv = clamp(c.level || 1, 1, 20);
+  c.slots = c.slots || {}; c.slotsMax = c.slotsMax || {};
+  if (kind === 'none') { c.slots = {}; c.slotsMax = {}; c.pact = null; c.pactMax = null; return; }
+  if (kind === 'pact') {
+    const [n, sl] = PACT_MAGIC[lv];
+    const prev = c.pactMax ? c.pactMax.n : 0;
+    if (c.pact === undefined || c.pact === null) c.pact = n;
+    else if (n > prev) c.pact = clamp(c.pact + (n - prev), 0, n);
+    c.pact = clamp(c.pact, 0, n);
+    c.pactMax = { n, lv: sl };
+    c.slots = {}; c.slotsMax = {};
+    return;
+  }
+  const tbl = (kind === 'half' ? SPELL_SLOTS_HALF : SPELL_SLOTS_FULL)[lv] || [];
+  const nm = {};
+  for (let i = 0; i < tbl.length; i++) nm[i + 1] = tbl[i];
+  const all = new Set([...Object.keys(nm), ...Object.keys(c.slotsMax || {})]);
+  all.forEach(k => {
+    const mx = nm[k] || 0, prev = (c.slotsMax || {})[k] || 0;
+    if (mx === 0) { delete c.slots[k]; return; }
+    if (c.slots[k] === undefined) c.slots[k] = mx;
+    else if (mx > prev) c.slots[k] = clamp(c.slots[k] + (mx - prev), 0, mx);
+    else c.slots[k] = clamp(c.slots[k], 0, mx);
+  });
+  c.slotsMax = nm;
+}
+function casterKind(c) { return CASTER_KIND[c.cls] || 'none'; }
+function slotTotal(c) {
+  let n = 0;
+  Object.values(c.slots || {}).forEach(v => n += v);
+  if (casterKind(c) === 'pact' && c.pact) n += c.pact;
+  return n;
+}
+function slotList(c) {
+  const out = [];
+  if (casterKind(c) === 'pact') {
+    if (c.pactMax && c.pactMax.n) out.push({ lv: c.pactMax.lv, cur: c.pact, max: c.pactMax.n, pact: true });
+    return out;
+  }
+  Object.keys(c.slotsMax || {}).map(Number).sort((a, b) => a - b).forEach(L => {
+    out.push({ lv: L, cur: c.slots[L] || 0, max: c.slotsMax[L] });
+  });
+  return out;
+}
+/* 消耗一个环级 ≥ need 的法术位，返回实际用掉的环级 */
+function useSlot(c, need) {
+  need = need || 1;
+  if (casterKind(c) === 'pact') {
+    if (c.pact > 0 && c.pactMax.lv >= need) { c.pact--; return c.pactMax.lv; }
+    return 0;
+  }
+  for (let L = need; L <= 9; L++) {
+    if ((c.slots[L] || 0) > 0) { c.slots[L]--; return L; }
+  }
+  return 0;
+}
+
+/* ── 状态 ── */
+
+function addCond(targetRef, k, silent) {
+  const t = targetInfo(targetRef);
+  const c = t && t.char;
+  if (!c) { if (!silent) toast('找不到目标：' + (targetRef || '（未指定）'), 'err'); return false; }
+  c.conditions = c.conditions || [];
+  if (c.conditions.includes(k)) return false;
+  c.conditions.push(k);
+  if (!silent) { addSys(`${COND_MAP[k] ? COND_MAP[k].icon : '•'} ${c.name} ${k}`); }
+  try { netPushCharById(c.id); } catch (_) {}
+  return true;
+}
+function removeCond(c, k) {
+  c.conditions = (c.conditions || []).filter(x => x !== k);
+  try { netPushCharById(c.id); } catch (_) {}
+}
+function condDis(c) { return (c.conditions || []).filter(k => (COND_MAP[k] || {}).dis); }
+function condText(c) {
+  return (c.conditions || []).map(k => `${COND_MAP[k] ? COND_MAP[k].icon : '•'}${k}`).join(' ');
+}
+
+/* ── 战斗目标：让伤害有地方落 ── */
+
+function combatUnits() { return (state.combat && state.combat.order) || []; }
+function targetInfo(ref) {
+  ref = String(ref == null ? '' : ref).trim();
+  if (!ref) {
+    const c = activeChar();
+    return c ? { ref: c.name, unit: null, char: c, name: c.name, enemy: false } : null;
+  }
+  const u = combatUnits().find(x => x.name === ref || x.id === ref);
+  if (u) {
+    const c = getChar(u.id);
+    return { ref, unit: u, char: c, name: u.name, enemy: !!u.enemy };
+  }
+  const c = state.chars.find(x => x.name === ref || x.id === ref);
+  if (c) {
+    const u2 = combatUnits().find(x => x.id === c.id);
+    return { ref, unit: u2 || null, char: c, name: c.name, enemy: false };
+  }
+  return null;
+}
+function applyHpChange(ref, delta) {
+  const t = targetInfo(ref);
+  if (!t) return null;
+  if (t.unit && t.unit.enemy) {
+    t.unit.maxHp = t.unit.maxHp || 1;
+    t.unit.hp = clamp((t.unit.hp || 0) + delta, 0, t.unit.maxHp);
+    return { name: t.name, hp: t.unit.hp, max: t.unit.maxHp, enemy: true };
+  }
+  const c = t.char;
+  if (!c) return null;
+  c.hp = clamp((c.hp || 0) + delta, 0, c.maxHp);
+  if (t.unit) { t.unit.hp = c.hp; t.unit.maxHp = c.maxHp; }
+  try { netPushCharById(c.id); } catch (_) {}
+  return { name: c.name, hp: c.hp, max: c.maxHp, enemy: false, char: c };
+}
+function targetAc(ref, fallback) {
+  const t = targetInfo(ref);
+  if (!t) return fallback == null ? 13 : fallback;
+  if (t.unit && t.unit.enemy) return t.unit.ac || fallback || 13;
+  if (t.char) return t.char.ac || fallback || 13;
+  return fallback == null ? 13 : fallback;
+}
+/* 往先攻序列里加一个敌人单位 */
+function addUnit(name, init, hp, ac) {
+  if (!state.combat) state.combat = { on: false, round: 1, order: [], turn: 0 };
+  state.combat.order = state.combat.order || [];
+  state.combat.enemies = state.combat.enemies || [];
+  const u = {
+    id: uid(), name: String(name || '敌人').trim() || '敌人',
+    init: Number.isFinite(+init) ? +init : D(20) + 1,
+    hp: Number.isFinite(+hp) ? +hp : 7 + D(6), maxHp: 0,
+    ac: Number.isFinite(+ac) ? +ac : 13, enemy: true
+  };
+  u.maxHp = u.hp;
+  state.combat.order.push(u);
+  state.combat.order.sort((a, b) => b.init - a.init);
+  if (!state.combat.enemies.some(e => e.id === u.id)) state.combat.enemies.push(u);
+  return u;
+}
+function removeUnit(id) {
+  if (!state.combat) return;
+  state.combat.order = (state.combat.order || []).filter(u => u.id !== id);
+  if (state.combat.enemies) state.combat.enemies = state.combat.enemies.filter(u => u.id !== id);
+  if (state.combat.turn >= state.combat.order.length) state.combat.turn = Math.max(0, state.combat.order.length - 1);
+}
+/* 先攻序列里玩家角色的那一条是副本，改完要同步回角色卡 */
+function syncCombatFromChars() {
+  combatUnits().forEach(u => {
+    if (!u.enemy) { const c = getChar(u.id); if (c) { u.hp = c.hp; u.maxHp = c.maxHp; u.name = c.name; u.ac = c.ac; } }
+  });
+}
+
+/* ── 特性 ── */
+
+function featsOf(c) {
+  const lv = c.level || 1;
+  return (CLASS_FEATURES[c.cls] || []).filter(f => (f.lv || 1) <= lv);
+}
+function featDice(spec, c) {
+  if (!spec) return '1d6';
+  if (spec === 'sneak')   return SNEAK_DIE(c.level) + 'd6';
+  if (spec === 'martial') return MARTIAL_ARTS_DIE(c.level);
+  if (spec === 'ki')      return KI_DIE(c.level);
+  if (spec === 'insp')    return '1' + INSP_DIE(c.level);
+  return spec;
+}
+function postFeat(c, icon, name, text, footer) {
+  pushMsg({ role: 'feat', icon: icon || '✦', name, text, footer: footer || '', note: c ? c.name : '', charId: c ? c.id : null, ts: Date.now() });
+}
+function featLine(m) {
+  return `〔角色能力〕${m.note || ''} 使用「${m.name}」：${String(m.text || '').replace(/\n/g, ' ')}${m.footer ? '（' + m.footer + '）' : ''}`;
+}
+
+const METAMAGIC = [
+  { n:'强效法术', cost:1, d:'法术伤害重掷最多 魅力调整值 个伤害骰并采用新结果。' },
+  { n:'成双法术', cost:1, d:'法术射程翻倍；触及法术变为 30 尺。' },
+  { n:'强化法术', cost:1, d:'法术豁免 DC 提升 2。' },
+  { n:'延长法术', cost:1, d:'法术持续时间翻倍（最长 24 小时）。' },
+  { n:'迅捷法术', cost:2, d:'把施法时间从 1 动作改为 1 附赠动作。' },
+  { n:'细致法术', cost:1, d:'法术影响范围内的部分生物自动通过豁免且不受伤害。' },
+  { n:'孪生法术', cost:'法术环级', d:'对第二个目标复制一个只针对单一目标的法术。' },
+  { n:'无形法术', cost:1, d:'施法无需言语与姿势。' },
+];
+
+function useFeature(id, targetRef) {
+  const c = activeChar();
+  if (!c) { toast('请先在右侧面板选中一名角色', 'err'); return; }
+  const f = (CLASS_FEATURES[c.cls] || []).find(x => x.id === id);
+  if (!f) { toast('这名角色没有该特性', 'err'); return; }
+  if ((f.lv || 1) > (c.level || 1)) { toast(`${f.name} 需要 ${f.lv} 级才能使用`, 'err'); return; }
+  if (f.act === 'passive') { toast(`${f.name} 是被动特性，一直生效`, ''); return; }
+
+  syncResources(c);
+  const need = f.res, pool = need ? RES_DEFS[need] : null;
+  const kind = f.exec.kind;
+
+  if (need && kind !== 'poolheal' && (c.res[need] || 0) <= 0) {
+    toast(`${pool.name} 已用尽 —— 需要休息才能恢复`, 'err');
+    return;
+  }
+  if (kind === 'smite' && slotTotal(c) <= 0) { toast('没有可用的法术位', 'err'); return; }
+
+  const after = () => { syncCombatFromChars(); persist(); renderSheet(); renderPartySide(); renderCombat(); if (state.combat && state.combat.on) netPushCombat(); };
+
+  switch (kind) {
+    case 'heal': {
+      const r = rollExpr(`${featDice(f.exec.dice, c)}${f.exec.plus === 'level' ? '+' + (c.level || 1) : ''}`);
+      if (!r) { toast('骰式有误', 'err'); return; }
+      spendRes(c, need, 1);
+      const before = c.hp;
+      c.hp = clamp(c.hp + r.total, 0, c.maxHp);
+      flashDice(r.total, f.name, '');
+      postFeat(c, f.icon, f.name, `${f.exec.dice}${f.exec.plus === 'level' ? ' ＋ 等级 ' + c.level : ''} = **${r.total}**，生命 ${before} → ${c.hp}/${c.maxHp}`,
+        `${pool.icon}${pool.name} ${c.res[need]}/${c.resMax[need]}`);
+      after(); dmAfterRoll();
+      return;
+    }
+    case 'roll': {
+      const dice = featDice(f.exec.dice, c);
+      const r = rollExpr(dice);
+      if (!r) { toast('骰式有误', 'err'); return; }
+      flashDice(r.total, f.exec.label || f.name, '');
+      postFeat(c, f.icon, f.name, `${f.exec.label || '额外伤害'} **${r.total}**（${dice}）—— 请把它加到这次攻击的伤害上`,
+        `每次攻击一次 · 随等级提高`);
+      after();
+      return;
+    }
+    case 'attacks': {
+      const n = f.exec.n === 'blast' ? ((c.level >= 11) ? 3 : (c.level >= 5) ? 2 : 1) : (f.exec.n || 1);
+      const dice = featDice(f.exec.dice, c);
+      const ab = f.exec.bonus || 'str';
+      const bonus = MOD(c.ab[ab]) + PROF(c.level);
+      const ac = targetAc(targetRef, 13);
+      const lines = []; let hits = 0, dmgTotal = 0;
+      const attacks = [];
+      for (let i = 0; i < n; i++) {
+        const { v } = d20Roll({});
+        const total = v + bonus;
+        const hit = v === 20 || (v !== 1 && total >= ac);
+        const dm = hit ? rollExpr(dice + sign(MOD(c.ab[ab])) + (v === 20 ? '+' + dice : '')).total : 0;
+        if (hit) { hits++; dmgTotal += dm; }
+        lines.push(`第 ${i + 1} 击 d20(${v})${sign(bonus)} = ${total} → ${v === 20 ? '重击' : v === 1 ? '必定失手' : hit ? '命中' : '失手'}${hit ? `（${dm} 点）` : ''}`);
+        attacks.push({ v, total, hit, dm });
+      }
+      if (need) spendRes(c, need, 1);
+      if (targetRef && hits > 0) { const res = applyHpChange(targetRef, -dmgTotal); if (res) lines.push(`→ ${res.name} 受到 ${dmgTotal} 点伤害，剩余 ${res.hp}/${res.max}`); }
+      postFeat(c, f.icon, f.exec.label || f.name, lines.join('\n'),
+        `${need ? pool.icon + pool.name + ' ' + c.res[need] + '/' + c.resMax[need] + ' · ' : ''}对抗 AC ${ac} · ${hits}/${n} 命中，共 ${dmgTotal} 点`);
+      flashDice(attacks[0].v, f.exec.label || f.name, attacks[0].v === 20 ? 'nat20' : '');
+      after(); dmAfterRoll();
+      return;
+    }
+    case 'poolheal': {
+      const left = c.res.lay_on_hands || 0;
+      if (left <= 0) { toast('圣疗池已空 —— 长休后补满', 'err'); return; }
+      openModal({
+        title: '圣疗 · 分配点数', narrow: true,
+        body: `<p class="muted" style="line-height:1.75;margin-bottom:12px">圣疗池剩余 <b>${left}</b> 点（1 点 = 1 HP）。<br>也可以花 5 点解除一项疾病或毒素。</p>
+          <label class="field"><span>用于治疗的点数</span><input type="number" id="loh-n" min="1" max="${left}" value="${Math.min(left, 10)}"></label>`,
+        footer: `<button class="btn ghost" onclick="closeModal()">取消</button>
+                 <button class="btn" onclick="lohCure_()">✦ 花 5 点解毒除病</button>
+                 <button class="btn primary" onclick="lohGo_()">🕊️ 治疗</button>`
+      });
+      return;
+    }
+    case 'smite': {
+      const opts = slotList(c).filter(s => !s.pact || s.lv >= 1).map(s => {
+        const extra = Math.max(0, s.lv - 1);
+        return { n: `${s.lv} 环法术位`, cost: 1, d: `额外 2d8${extra ? ' + ' + extra + 'd8' : ''} 光耀伤害（剩 ${s.cur}）`, slot: s.lv, pact: s.pact };
+      }).filter(o => o.slot <= 5);
+      if (!opts.length) { toast('没有 1~5 环的法术位可用', 'err'); return; }
+      openFeatPicker('神圣重击 · 消耗法术位', opts, o => {
+        const L = useSlot(c, o.slot);
+        if (!L) { toast('法术位不足', 'err'); return; }
+        const n = Math.max(0, L - 1);
+        const r = rollExpr(`2d8${n ? '+' + n + 'd8' : ''}`);
+        flashDice(r.total, '神圣重击', '');
+        postFeat(c, '🌅', '神圣重击', `消耗 ${L} 环法术位，额外造成 **${r.total}** 点光耀伤害（2d8${n ? ' + ' + n + 'd8' : ''}）`, `剩余法术位总计 ${slotTotal(c)}`);
+        after(); dmAfterRoll();
+      });
+      return;
+    }
+    case 'attack_eq': return;
+    case 'ac': {
+      toast('这是被动特性，一直生效', '');
+      return;
+    }
+    case 'buff': {
+      if (need) spendRes(c, need, 1);
+      addCond(c.name, f.name, true);
+      postFeat(c, f.icon, f.name, f.exec.text, `${need ? pool.icon + pool.name + ' ' + c.res[need] + '/' + c.resMax[need] : '被动'}`);
+      after(); dmAfterRoll();
+      return;
+    }
+    case 'metamagic': {
+      const opts = METAMAGIC.map(m => ({ n: m.n, cost: typeof m.cost === 'number' ? m.cost : 0, d: m.d + (typeof m.cost === 'number' ? `（${m.cost} 点）` : '（按法术环级）'), mm: m }));
+      openFeatPicker('超魔法 · 消耗术法点', opts, o => {
+        const cost = typeof o.mm.cost === 'number' ? o.mm.cost : 1;
+        if ((c.res.sorcery || 0) < cost) { toast('术法点不足', 'err'); return; }
+        spendRes(c, 'sorcery', cost);
+        postFeat(c, '🌀', '超魔法 · ' + o.mm.n, o.mm.d, `🔮术法点 ${c.res.sorcery}/${c.resMax.sorcery}`);
+        after(); dmAfterRoll();
+      }, '选择一种超魔法（术法点不足时会提示）');
+      return;
+    }
+    case 'sorcery': {
+      const opts = [
+        { n:'用术法点换法术位', cost:0, d:'按 DM 规则：1 环 2 点 / 2 环 3 点 / 3 环 5 点 / 4 环 6 点 / 5 环 7 点', conv:'to' },
+        { n:'用 1 环法术位换 2 术法点', cost:0, d:'仅在仍有 1 环法术位时可用', conv:'from1' },
+        { n:'用 2 环法术位换 3 术法点', cost:0, d:'仅在仍有 2 环法术位时可用', conv:'from2' },
+      ];
+      openFeatPicker('术法点转换', opts, o => {
+        if (o.conv === 'to') { toast('请告诉 DM 你想换几环的法术位，DM 会给出裁定'); postFeat(c, '🔮', '术法点转换', '准备用术法点换取法术位 —— 请 DM 裁定环级与点数。', `🔮术法点 ${c.res.sorcery}/${c.resMax.sorcery}`); }
+        else {
+          const L = o.conv === 'from1' ? 1 : 2, gain = L === 1 ? 2 : 3;
+          if ((c.slots[L] || 0) <= 0) { toast(`${L} 环法术位不足`, 'err'); return; }
+          c.slots[L]--;
+          c.res.sorcery = clamp((c.res.sorcery || 0) + gain, 0, c.resMax.sorcery);
+          postFeat(c, '🔮', '术法点转换', `消耗 1 个 ${L} 环法术位，获得 **${gain}** 点术法点。`, `🔮术法点 ${c.res.sorcery}/${c.resMax.sorcery}`);
+        }
+        after();
+      });
+      return;
+    }
+    case 'arcane': {
+      const cap = Math.ceil((c.level || 1) / 2);
+      const broken = slotList(c).filter(s => !s.pact && s.cur < s.max);
+      if (!broken.length) { toast('没有已消耗的法术位可以回收', 'err'); return; }
+      const opts = broken.map(s => ({ n: `${s.lv} 环法术位`, cost: 0, d: `回收 1 个（已用 ${s.max - s.cur}/${s.max}，总环数上限 ${cap}）`, lv: s.lv }));
+      openFeatPicker('奥术恢复 · 回收法术位', opts, o => {
+        spendRes(c, 'arcane_recovery', 1);
+        c.slots[o.lv] = clamp((c.slots[o.lv] || 0) + 1, 0, c.slotsMax[o.lv]);
+        postFeat(c, '📖', '奥术恢复', `回收 1 个 ${o.lv} 环法术位（总环数上限 ${cap}）。`, `📖奥术恢复 ${c.res.arcane_recovery}/${c.resMax.arcane_recovery}`);
+        after();
+      }, `这次休息最多可回收总环数 ${cap}；也可以直接让 DM 裁定。`);
+      return;
+    }
+    case 'channel': {
+      const opts = [
+        { n:'驱散不死', cost:0, d:'30 尺内不死生物进行感知豁免，失败则被驱散 1 分钟。' },
+        { n:'神圣领域特性', cost:0, d:'施展你所属领域的神圣力量（由 DM 依据你的领域裁定）。' },
+        { n:'斥退异类', cost:0, d:'部分神职可斥退天界生物、邪魔或元素生物。' },
+      ];
+      openFeatPicker('引导神力', opts, o => {
+        spendRes(c, 'channel', 1);
+        postFeat(c, '📿', '引导神力 · ' + o.n, o.d, `📿引导神力 ${c.res.channel}/${c.resMax.channel}`);
+        after(); dmAfterRoll();
+      });
+      return;
+    }
+    case 'inspire': {
+      const targets = party();
+      openModal({
+        title: '诗人激励 · 送给谁', narrow: true,
+        body: `<p class="muted" style="margin-bottom:12px">激励骰 <b>${INSP_DIE(c.level)}</b>，他可在任意一次检定、攻击或豁免中使用。</p>
+          <div class="feat-picks">${targets.map(t => `<button class="fp-item" onclick="inspireGo_('${esc(t.name)}')"><b>${esc(t.name)}</b><span>${esc(t.race)} ${esc(t.cls)}</span></button>`).join('') || '<p class="muted">队伍里还没有别的角色。</p>'}</div>`,
+        footer: `<button class="btn ghost" onclick="closeModal()">取消</button>`
+      });
+      return;
+    }
+    case 'note': {
+      if (need) spendRes(c, need, 1);
+      postFeat(c, f.icon, f.name, f.exec.text || f.desc, `${need ? pool.icon + pool.name + ' ' + c.res[need] + '/' + c.resMax[need] : '自由动作'}`);
+      after(); dmAfterRoll();
+      return;
+    }
+    case 'recover': {
+      if (need) spendRes(c, need, 1);
+      postFeat(c, f.icon, f.name, f.exec.text || f.desc, '');
+      after();
+      return;
+    }
+    default: {
+      if (need) spendRes(c, need, 1);
+      postFeat(c, f.icon, f.name, f.exec.text || f.desc, `${need ? pool.icon + pool.name + ' ' + c.res[need] + '/' + c.resMax[need] : ''}`);
+      after(); dmAfterRoll();
+    }
+  }
+}
+window.useFeature_ = useFeature;
+
+window.lohGo_ = () => {
+  const c = activeChar(); if (!c) return;
+  const left = c.res.lay_on_hands || 0;
+  const n = clamp(parseInt(($('#loh-n') || {}).value || '0', 10) || 0, 1, left);
+  if (!n) { toast('请输入要使用的点数', 'err'); return; }
+  closeModal();
+  const before = c.hp;
+  c.res.lay_on_hands -= n;
+  c.hp = clamp(c.hp + n, 0, c.maxHp);
+  postFeat(c, '🕊️', '圣疗', `消耗 ${n} 点圣疗池，生命 ${before} → ${c.hp}/${c.maxHp}`, `🕊️圣疗池 ${c.res.lay_on_hands}/${c.resMax.lay_on_hands}`);
+  persist(); renderSheet(); renderPartySide(); renderCombat(); dmAfterRoll();
+};
+window.lohCure_ = () => {
+  const c = activeChar(); if (!c) return;
+  if ((c.res.lay_on_hands || 0) < 5) { toast('圣疗池不足 5 点', 'err'); return; }
+  closeModal();
+  c.res.lay_on_hands -= 5;
+  const cured = ['中毒', '中毒(强)'].filter(k => (c.conditions || []).includes(k));
+  cured.forEach(k => removeCond(c, k));
+  postFeat(c, '🕊️', '圣疗 · 祛毒', `消耗 5 点圣疗池，解除${cured.length ? cured.join('、') : '一项疾病或毒素'}。`, `🕊️圣疗池 ${c.res.lay_on_hands}/${c.resMax.lay_on_hands}`);
+  persist(); renderSheet(); renderCombat(); dmAfterRoll();
+};
+window.inspireGo_ = name => {
+  const c = activeChar(); if (!c) return;
+  if (!spendRes(c, 'inspiration', 1)) { toast('诗人激励已用尽', 'err'); return; }
+  closeModal();
+  const d = INSP_DIE(c.level);
+  const r = rollExpr('1' + d);
+  postFeat(c, '🎵', '诗人激励', `把一颗 **${d}** 激励骰交给 ${name}${r ? `（本次掷出 ${r.total}，需在用过之后再消耗）` : ''}。`, `🎵诗人激励 ${c.res.inspiration}/${c.resMax.inspiration}`);
+  persist(); renderSheet(); dmAfterRoll();
+};
+
+/* 通用「选一项」弹窗 */
+function openFeatPicker(title, opts, cb, note) {
+  window.__featPickCb = cb;
+  openModal({
+    title, narrow: true,
+    body: `${note ? `<p class="muted" style="margin-bottom:12px;line-height:1.7">${esc(note)}</p>` : ''}
+      <div class="feat-picks">
+        ${opts.map((o, i) => `<button class="fp-item" onclick="featPick_(${i})"><b>${esc(o.n)}</b><span>${esc(o.d || '')}</span></button>`).join('')}
+      </div>`,
+    footer: `<button class="btn ghost" onclick="closeModal()">取消</button>`
+  });
+  window.__featPickOpts = opts;
+}
+window.featPick_ = i => {
+  const o = (window.__featPickOpts || [])[i];
+  const cb = window.__featPickCb;
+  closeModal();
+  if (o && cb) cb(o);
+};
+
+/* ── 施法 ── */
+
+function castSpell(name) {
+  const c = activeChar();
+  if (!c) { toast('请先在右侧面板选中一名角色', 'err'); return; }
+  const sp = SPELL_LIB.find(s => s.n === name);
+  if (!sp) { toast('法术库里没有这一条', 'err'); return; }
+  const kind = casterKind(c);
+  if (kind === 'none') { toast(`${c.cls}不是施法职业`, 'err'); return; }
+  let used = '';
+  if (sp.lv === 0) used = '戏法（不消耗法术位）';
+  else {
+    const L = useSlot(c, sp.lv);
+    if (!L) { toast(`没有 ${sp.lv} 环及以上的法术位了`, 'err'); return; }
+    used = `${L} 环法术位`;
+  }
+  postFeat(c, sp.lv === 0 ? '✨' : '🔮', '施放 · ' + sp.n,
+    `${used}${sp.lv ? '（' + sp.lv + ' 环 ' + sp.sch + '）' : '（' + sp.sch + '）'} · ${sp.t} · ${sp.r}\n${sp.d}`,
+    slotTotal(c) ? `剩余法术位 ${slotTotal(c)}` : '法术位已空');
+  persist(); renderSheet(); renderPartySide(); dmAfterRoll();
+}
+window.castSpell_ = castSpell;
+
+function openSpellbook() {
+  const c = activeChar();
+  if (!c) { toast('请先在右侧面板选中一名角色', 'err'); return; }
+  const kind = casterKind(c);
+  if (kind === 'none') { toast(`${c.cls}不是施法职业，没有法术位`, 'err'); return; }
+  const maxLv = kind === 'pact' ? (c.pactMax ? c.pactMax.lv : 0) : Math.max(0, ...Object.keys(c.slotsMax || {}).map(Number).filter(L => (c.slots[L] || 0) > 0));
+  const list = SPELL_LIB.filter(s => s.cls.includes(c.cls) && (s.lv === 0 || s.lv <= Math.max(0, ...Object.keys(c.slotsMax || {}).map(Number), kind === 'pact' ? (c.pactMax ? c.pactMax.lv : 0) : 0)));
+  openModal({
+    title: `${c.cls} · 法术库`, wide: true,
+    body: `<p class="muted" style="margin-bottom:12px;line-height:1.7">
+        当前可用：${slotList(c).filter(s => s.cur > 0).map(s => `<b>${s.pact ? '魔契 ' : ''}${s.lv} 环 ${s.cur} 个</b>`).join(' · ') || '<b>没有剩余法术位</b>'}
+        ${maxLv ? ` · 最高可施 ${maxLv} 环` : ''}<br>
+        点一条即施放（戏法不消耗法术位），结果会发到桌面并交给 DM。</p>
+      <div class="spell-grid">
+        ${list.map(s => {
+          const can = s.lv === 0 || slotList(c).some(x => x.cur > 0 && (!x.pact || x.lv >= s.lv) && (x.pact || x.lv >= s.lv));
+          return `<button class="spell-item ${can ? '' : 'off'}" onclick="castSpell_('${esc(s.n)}');closeModal()">
+            <div class="si-hd"><b>${esc(s.n)}</b><span class="si-lv">${s.lv === 0 ? '戏法' : s.lv + ' 环'}</span></div>
+            <div class="si-mt">${esc(s.sch)} · ${esc(s.t)} · ${esc(s.r)}</div>
+            <div class="si-d">${esc(s.d)}</div>
+          </button>`;
+        }).join('')}
+      </div>`,
+    footer: `<button class="btn ghost" onclick="closeModal()">关闭</button>`
+  });
+}
+window.openSpellbook_ = openSpellbook;
+
+/* ── 休息 ── */
+
+function hdMax(c) { return Math.max(1, c.level || 1); }
+function syncHitDice(c) {
+  if (!c.hdMax) c.hdMax = 0;
+  if (!c.hitDice) c.hitDice = 0;
+  const mx = hdMax(c);
+  if (!c.hdMax) { c.hdMax = mx; c.hitDice = mx; return; }
+  if (mx > c.hdMax) { c.hitDice = clamp(c.hitDice + (mx - c.hdMax), 0, mx); c.hdMax = mx; }
+}
+function spendHitDie(c) {
+  syncHitDice(c);
+  if (c.hitDice <= 0) { toast('生命骰已用尽 —— 长休后恢复一半', 'err'); return; }
+  c.hitDice--;
+  const r = rollExpr(`1d${c.hitDie}${sign(MOD(c.ab.con))}`);
+  const before = c.hp;
+  c.hp = clamp(c.hp + r.total, 0, c.maxHp);
+  flashDice(r.total, '花费生命骰', '');
+  addSys(`🎲 ${c.name} 花费 1 颗生命骰（1d${c.hitDie}${sign(MOD(c.ab.con))} = ${r.total}），生命 ${before} → ${c.hp}/${c.maxHp} · 剩余 ${c.hitDice}/${c.hdMax}`);
+  persist(); renderChat(); renderSheet(); renderPartySide(); syncCombatFromChars(); renderCombat();
+}
+window.spendHitDie_ = () => { const c = activeChar(); if (c) spendHitDie(c); };
+
+function restShort(id) {
+  const c = id ? getChar(id) : activeChar();
+  if (!c) { toast('请先选择一名角色', 'err'); return; }
+  syncResources(c); syncSpellSlots(c); syncHitDice(c);
+  const got = [];
+  charResKeys(c).forEach(k => {
+    if (RES_DEFS[k].rec === 'short' && (c.res[k] || 0) < c.resMax[k]) { got.push(`${RES_DEFS[k].icon}${RES_DEFS[k].name} ${c.res[k] || 0}→${c.resMax[k]}`); c.res[k] = c.resMax[k]; }
+  });
+  if (casterKind(c) === 'pact' && c.pactMax && c.pact < c.pactMax.n) { got.push(`🌑魔契法术位 ${c.pact}→${c.pactMax.n}`); c.pact = c.pactMax.n; }
+  addSys(`⏳ ${c.name} 完成短休（1 小时）${got.length ? ' · 恢复 ' + got.join('、') : ' · 短休类资源本就充足'} · 可花费生命骰回血（剩 ${c.hitDice}/${c.hdMax}）`);
+  persist(); renderChat(); renderSheet(); renderPartySide(); syncCombatFromChars(); renderCombat();
+  if (NET.on) netSyncMyChar();
+}
+function restLong(id) {
+  const c = id ? getChar(id) : activeChar();
+  if (!c) { toast('请先选择一名角色', 'err'); return; }
+  syncResources(c); syncSpellSlots(c); syncHitDice(c);
+  const before = c.hp;
+  c.hp = c.maxHp;
+  charResKeys(c).forEach(k => { c.res[k] = c.resMax[k]; });
+  Object.keys(c.slots || {}).forEach(L => { c.slots[L] = c.slotsMax[L]; });
+  if (casterKind(c) === 'pact' && c.pactMax) c.pact = c.pactMax.n;
+  const back = Math.max(1, Math.floor(hdMax(c) / 2));
+  c.hitDice = clamp(c.hitDice + back, 0, c.hdMax);
+  const cleared = (c.conditions || []).slice();
+  c.conditions = [];
+  addSys(`🌙 ${c.name} 完成长休（8 小时）· 生命 ${before}→${c.hp}/${c.maxHp} · 资源与法术位全部恢复 · 生命骰回复 ${back} 颗（${c.hitDice}/${c.hdMax}）${cleared.length ? ' · 解除：' + cleared.join('、') : ''}`);
+  persist(); renderChat(); renderSheet(); renderPartySide(); syncCombatFromChars(); renderCombat();
+  if (NET.on) netSyncMyChar();
+}
+window.restShort_ = id => restShort(id);
+window.restLong_ = id => restLong(id);
+
+/* ── 攻击（带目标） ── */
+
+function doAttack(weapon, opts) {
+  opts = opts || {};
+  const c = activeChar();
+  if (!c) { toast('请先选择一名角色', 'err'); return; }
+  const w = weaponOf(weapon);
+  const ab = opts.ability || weaponAbility(c, w);
+  const extra = opts.extra || 0;
+  const prof = opts.prof === false ? 0 : PROF(c.level);
+  const bonus = MOD(c.ab[ab]) + prof + extra;
+  const mode = opts.mode || 'normal';
+  const { v, pair } = d20Roll({ mode });
+
+  let ac = opts.ac;
+  if (ac == null && opts.target) ac = targetAc(opts.target, 13);
+  if (ac == null) ac = 13;
+
+  const total = v + bonus;
+  const hit = v === 20 || (v !== 1 && total >= ac);
+  const crit = v === 20 ? 'nat20' : v === 1 ? 'nat1' : '';
+  const dmgDice = opts.dice || w.dmg;
+  let dmg = null;
+  if (hit && dmgDice !== '0') {
+    const expr = /^\d+$/.test(dmgDice) ? String(dmgDice) : dmgDice + sign(MOD(c.ab[ab])) + (v === 20 ? '+' + dmgDice : '');
+    const r = rollExpr(expr);
+    dmg = r ? r.total : null;
+  }
+  flashDice(v, `攻击 · ${w.name}`, crit);
+
+  let compare = `对抗 AC ${ac} — ${v === 20 ? '重击命中' : v === 1 ? '必定失手' : hit ? '命中' : '失手'}`;
+  if (hit && dmg !== null) compare += ` · 伤害 ${dmg}${w.type ? '（' + w.type + '）' : ''}`;
+  if (opts.target) {
+    const t = targetInfo(opts.target);
+    if (t) compare = `${t.name} · ` + compare;
+    if (hit && dmg !== null) {
+      const res = applyHpChange(opts.target, -dmg);
+      if (res) compare += ` → ${res.name} 剩余 ${res.hp}/${res.max}`;
+    }
+  }
+  pushMsg({
+    role: 'dice', by: 'player', label: `攻击 · ${w.name}`, detail: (mode === 'normal' ? 'd20' : `2d20[${pair.join(',')}]→${v}`) + sign(bonus),
+    total, crit, intent: opts.intent || lastUndeclaredAction() || `用${w.name}发起攻击`,
+    compare, note: c.name, ts: Date.now()
+  });
+  if (w.guess) addSys(`（${w.name} 不在武器表里，暂按 ${w.dmg} 计算；可在角色卡的行囊里改用标准武器名）`);
+  persist(); renderChat(); renderSheet(); renderPartySide(); syncCombatFromChars(); renderCombat();
+  if (state.combat && state.combat.on) netPushCombat();
+  if (!opts.silent) dmAfterRoll();
+  return { v, total, hit, dmg };
+}
+
+/* ── DM 掷骰：敌人与「世界」那一侧的骰子 ──
+
+   跑团里「谁掷」必须分明：
+     · 玩家掌控自己的角色  → 玩家的检定、攻击、伤害都由玩家掷（doCheck / doAttack）；
+     · 敌人、NPC、遭遇表   → 由 DM 掷，也就是这里。
+   过去 DM 只能在文字里凭空写「地精命中 18」，玩家无从校验；现在给 DM
+   一套与玩家同源的真骰子，掷完把结果写进桌面，顺便回灌给 AI 继续叙事。*/
+
+const ROLL_BY = {
+  player: { chip: '玩家掷',   icon: '🜍', cls: 'by-player' },
+  dm:     { chip: 'DM 掷',    icon: '🜂', cls: 'by-dm' },
+  hidden: { chip: 'DM 暗骰',  icon: '🌑', cls: 'by-hidden' }
+};
+
+/* 重击：伤害骰翻倍（再算一遍同样的表达式） */
+function critDice(expr) {
+  const s = String(expr || '').replace(/\s+/g, '');
+  if (!/\d*d\d+/.test(s)) return s;
+  return s + '+' + s;
+}
+
+/* DM 掷骰。
+   opts = { who, kind:'attack'|'save'|'check'|'dmg'|'table', bonus, dc, ac,
+            dice, target, label, mode, hidden, silent, intent }
+   - attack：d20+bonus 对抗目标 AC，命中则掷 dice 并直接扣血
+   - save / check：d20+bonus 对抗 DC，只判定成败，交给 DM 叙事
+   - dmg：直接掷伤害骰并扣目标血
+   - table：掷任意表（天气、遭遇、随机事件）
+   hidden=true 时数值默认对玩家折叠（暗骰），但仍会进入 DM 的上下文。*/
+function dmRoll(opts) {
+  opts = opts || {};
+  const who = String(opts.who || '').trim() || 'DM';
+  const kind = ['attack', 'save', 'check', 'dmg', 'table'].indexOf(opts.kind) >= 0 ? opts.kind : 'check';
+  const bonus = Number.isFinite(+opts.bonus) ? +opts.bonus : 0;
+  const mode = opts.mode || 'normal';
+  const hidden = !!opts.hidden;
+  const t = opts.target ? targetInfo(opts.target) : null;
+  const tname = t ? t.name : String(opts.target || '').trim();
+
+  let label = '', detail = '', total = 0, crit = '', compare = '';
+
+  if (kind === 'attack' || kind === 'save' || kind === 'check') {
+    const r = d20Roll({ mode });
+    total = r.v + bonus;
+    crit = r.v === 20 ? 'nat20' : r.v === 1 ? 'nat1' : '';
+    detail = (mode === 'normal' ? 'd20' : '2d20[' + r.pair.join(',') + ']→' + r.v) + (bonus ? sign(bonus) : '');
+
+    if (kind === 'attack') {
+      label = who + ' · 攻击';
+      const ac = opts.ac != null ? +opts.ac : (t ? targetAc(opts.target, 13) : 13);
+      const hit = r.v === 20 || (r.v !== 1 && total >= ac);
+      compare = '对抗 ' + (tname || '目标') + ' AC ' + ac + ' — ' +
+        (r.v === 20 ? '重击命中' : r.v === 1 ? '必定失手' : hit ? '命中' : '失手');
+      if (hit && opts.dice && String(opts.dice) !== '0') {
+        const dr = rollExpr(r.v === 20 ? critDice(opts.dice) : String(opts.dice));
+        if (dr) {
+          const dmg = Math.max(1, dr.total);
+          compare += ' · 伤害 ' + dmg + '（' + exprLabel(dr) + '）';
+          if (opts.target) {
+            const res = applyHpChange(opts.target, -dmg);
+            if (res) compare += ' → ' + res.name + ' 剩余 ' + res.hp + '/' + res.max;
+          }
+        }
+      }
+    } else {
+      const dc = opts.dc != null ? +opts.dc : null;
+      label = who + ' · ' + (kind === 'save' ? '豁免' : '检定');
+      if (dc != null) {
+        compare = '对抗 DC ' + dc + ' — ' + (r.v === 20 ? '通过' : r.v === 1 ? '失败' : (total >= dc ? '通过' : '失败'));
+      }
+    }
+  } else {
+    const dr = opts.dice ? rollExpr(opts.dice) : null;
+    if (!dr) { toast('骰子语法无法解析：' + (opts.dice || '（空）'), 'err'); return null; }
+    total = dr.total;
+    detail = exprLabel(dr);
+    const one = dr.rolls.length === 1 && dr.rolls[0].kind === 'd' && dr.rolls[0].f === 20;
+    crit = one && dr.rolls[0].kept[0] === 20 ? 'nat20' : one && dr.rolls[0].kept[0] === 1 ? 'nat1' : '';
+    if (kind === 'dmg') {
+      label = who + ' · 伤害';
+      const dmg = Math.max(1, total);
+      compare = '造成 ' + dmg + ' 点伤害';
+      if (opts.target) {
+        const res = applyHpChange(opts.target, -dmg);
+        if (res) compare += ' → ' + res.name + ' 剩余 ' + res.hp + '/' + res.max;
+      }
+    } else {
+      label = opts.label || (who + ' · 投掷');
+    }
+  }
+
+  if (!hidden) flashDice(total, label, crit);
+  pushMsg({
+    role: 'dice', by: hidden ? 'hidden' : 'dm', whoName: who,
+    label, detail, total, crit, compare,
+    intent: opts.intent || '', note: who, ts: Date.now()
+  });
+  persist();
+  try { renderSheet(); renderPartySide(); syncCombatFromChars(); renderCombat(); } catch (_) {}
+  if (!opts.silent) dmAfterRoll();
+  return { total, label };
+}
+window.dmRoll = dmRoll;
+
+/* 怪物攻击玩家：从怪物表取加值与伤害，让 DM 侧一键真掷 */
+function mobAttack(mobName, targetRef, opts) {
+  opts = opts || {};
+  const m = guessMob(mobName) || {};
+  return dmRoll({
+    who: mobName || m.n || '敌人',
+    kind: 'attack',
+    bonus: opts.bonus != null ? opts.bonus : (m.ab != null ? m.ab : 3),
+    dice: opts.dice || m.dmg || '1d6+1',
+    target: targetRef,
+    mode: opts.mode,
+    silent: opts.silent
+  });
+}
+window.mobAttack = mobAttack;
+
+/* 玩家角色被要求掷豁免但由 DM 代掷（少见）／更常见的：DM 为玩家角色暗掷一次检定 */
+function hiddenCheck(charRef, skillName, dc, opts) {
+  opts = opts || {};
+  const c = (targetInfo(charRef) || {}).char || activeChar();
+  if (!c) { toast('找不到角色：' + (charRef || '（未指定）'), 'err'); return null; }
+  const raw = String(skillName || '').replace(/\s*(检定|豁免)\s*$/, '');
+  let bonus = 0;
+  if (SKILL_MAP[raw]) bonus = skillBonus(c, raw);
+  else {
+    const k = ABKEYS.find(x => AB[x].zh === raw || x === String(raw).toLowerCase());
+    if (k) bonus = /豁免$/.test(skillName) ? saveBonus(c, k) : MOD(c.ab[k]);
+  }
+  return dmRoll({ who: c.name, kind: 'check', bonus, dc, hidden: true, label: c.name + ' · ' + raw + '（暗掷）', silent: opts.silent });
+}
+window.hiddenCheck = hiddenCheck;
+
+/* ── 长休/短休的资源摘要（给界面用） ── */
+function restSummary(c) {
+  syncResources(c); syncSpellSlots(c); syncHitDice(c);
+  return {
+    res: resList(c), slots: slotList(c), hitDice: { cur: c.hitDice, max: c.hdMax },
+    kind: casterKind(c)
+  };
+}
 
 /* ─────────────── 6. 导航 ─────────────── */
 
@@ -867,13 +1975,104 @@ function renderTable() {
 function renderQuick() {
   const c = activeChar();
   const skills = ['察觉','调查','洞悉','隐匿','运动','说服','欺瞒','威吓','生存','体操'];
-  $('#chat-quick').innerHTML = skills.map(s =>
-    `<button class="chip-btn" onclick="quickCheck_('${s}')">${s} ${c ? sign(skillBonus(c, s)) : ''}</button>`
-  ).join('') + `<button class="chip-btn" onclick="quickRoll_('1d20')">d20</button>
+  $('#chat-quick').innerHTML =
+    `<button class="chip-btn q-declare" onclick="openCheckPanel_()">🎯 我要行动 · 检定</button>` +
+    `<button class="chip-btn" onclick="openAbilityPanel()" title="职业特性、资源与法术位">📜 能力</button>` +
+    `<button class="chip-btn" onclick="openCombatPanel()" title="战斗控制台：加敌人、改 HP/AC、推回合">⚔️ 战斗</button>` +
+    `<button class="chip-btn q-dm" onclick="openDMPanel()" title="DM 掷骰台：敌人的攻击、豁免、随机表（这些骰子由 DM 掷）">🜂 DM 掷</button>` +
+    skills.map(s =>
+      `<button class="chip-btn" onclick="quickCheck_('${s}')" title="点击直接掷「${s}」检定，结果会交给 DM 裁定">${s} ${c ? sign(skillBonus(c, s)) : ''}</button>`
+    ).join('') +
+    `<button class="chip-btn" onclick="quickRoll_('1d20')">d20</button>
     <button class="chip-btn" onclick="quickRoll_('1d100')">d100</button>`;
 }
-window.quickCheck_ = n => { const t = $('#chat-text'); t.value = '.ra ' + n + ' '; t.focus(); };
+window.quickCheck_ = n => {
+  const c = activeChar();
+  if (!c) { toast('请先在右侧面板选中一名角色', 'err'); return; }
+  const box = $('#chat-text');
+  const typed = box ? box.value.trim() : '';
+  if (typed) {                                   // 输入框里已经写了行动 → 直接当意图用
+    box.value = ''; box.style.height = 'auto';
+    declareCheck(n, null, 'normal', typed, 'skill:' + n);
+    return;
+  }
+  openIntentModal(n, null, 'normal', 'skill:' + n);   // 不然先问一句「你要做什么」
+};
 window.quickRoll_ = e => { const t = $('#chat-text'); t.value = '.r ' + e; sendChat(); };
+window.declareCheck_ = declareCheck;
+
+/* ── 主动检定面板：写下行动 → 选一项 → 掷骰交给 DM ── */
+let CP = { tab: 'skill', mode: 'normal', typed: '' };
+
+function openCheckPanel() {
+  const c = activeChar();
+  if (!c) { toast('请先在右侧面板选中一名角色', 'err'); return; }
+  CP.tab = 'skill'; CP.mode = 'normal';
+  // 「我打算」优先取输入框里刚写的话，其次取还没来得及配检定的上一条发言
+  const box = $('#chat-text');
+  CP.typed = box ? box.value.trim() : '';
+  const pre = CP.typed || lastUndeclaredAction();
+  openModal({
+    title: '我要行动 · 主动检定', wide: true,
+    body: `<p class="muted" style="margin-bottom:12px;line-height:1.7">
+        你在故事里想做点什么？先写下行动（可留空），再点下面任意一项掷骰。<br>
+        投出的结果会立刻出现在桌面上，并让 DM 接着叙述它带来的后果 —— 不知道 DC 是多少就留空，由 DM 裁定。</p>
+      <label class="field"><span>我打算……（会作为行动发布，可选）</span>
+        <input type="text" id="cp-action" value="${esc(pre)}" placeholder="例如：我贴着墙根摸到铁门边，屏息听门后的动静"></label>
+      <div class="row gap" style="margin-top:14px;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <div class="vl" style="margin-bottom:6px">投骰方式</div>
+          <div class="seg" id="cp-mode">
+            <button data-val="normal" class="on">普通</button><button data-val="adv">优势</button><button data-val="dis">劣势</button>
+          </div>
+        </div>
+        <label class="field" style="flex:0 0 160px;margin:0"><span>DC（留空由 DM 裁定）</span>
+          <input type="number" id="cp-dc" min="1" max="40" placeholder="不知就留空"></label>
+        <div style="flex:1"></div>
+        <div class="cp-cur">当前角色 <b>${esc(c.name)}</b> · ${esc(c.race)}${esc(c.cls)} Lv.${c.level}</div>
+      </div>
+      <div class="seg" id="cp-tabs" style="margin-top:16px">
+        <button data-val="skill" class="on">技能 18</button><button data-val="ab">属性 6</button><button data-val="save">豁免 6</button>
+      </div>
+      <div id="cp-list" class="cp-list"></div>`,
+    footer: `<button class="btn ghost" onclick="closeModal()">取消</button>`
+  });
+  $('#cp-mode').querySelectorAll('button').forEach(b =>
+    b.addEventListener('click', () => { CP.mode = b.dataset.val; setSeg('#cp-mode', CP.mode); }));
+  $('#cp-tabs').querySelectorAll('button').forEach(b =>
+    b.addEventListener('click', () => { CP.tab = b.dataset.val; setSeg('#cp-tabs', CP.tab); cpRenderList(); }));
+  cpRenderList();
+}
+
+function cpRenderList() {
+  const c = activeChar(); if (!c) return;
+  const box = $('#cp-list'); if (!box) return;
+  let items;
+  if (CP.tab === 'skill') {
+    items = SKILLS.map(s => ({ n: s.n, b: skillBonus(c, s.n), hint: 'skill:' + s.n, sub: AB[s.a].short, prof: c.proficient.includes(s.n) }));
+  } else if (CP.tab === 'ab') {
+    items = ABKEYS.map(k => ({ n: AB[k].zh, b: MOD(c.ab[k]), hint: 'ability:' + k, sub: String(c.ab[k]), prof: false }));
+  } else {
+    const sp = (CLASSES[c.cls] || {}).saves || [];
+    items = ABKEYS.map(k => ({ n: AB[k].zh + '豁免', b: saveBonus(c, k), hint: 'save:' + k, sub: String(c.ab[k]), prof: sp.includes(k) }));
+  }
+  box.innerHTML = items.map(it => `<button class="cp-item ${it.prof ? 'prof' : ''}">
+      <span class="cp-n">${esc(it.n)}${it.prof ? '<i class="cp-dot"></i>' : ''}</span>
+      <span class="cp-sub">${esc(it.sub)}</span>
+      <span class="cp-b">${sign(it.b)}</span>
+    </button>`).join('');
+  box.querySelectorAll('.cp-item').forEach((el, i) => el.addEventListener('click', () => {
+    const it = items[i];
+    const action = ($('#cp-action') || {}).value || '';
+    const raw = ($('#cp-dc') || {}).value || '';
+    const dc = raw ? parseInt(raw, 10) : null;
+    closeModal();
+    // 输入框里的文字已被采纳为意图，清掉避免下次重复带上
+    if (CP.typed) { const b = $('#chat-text'); if (b) { b.value = ''; b.style.height = 'auto'; } }
+    declareCheck(it.n, dc && !isNaN(dc) ? dc : null, CP.mode, action, it.hint);
+  }));
+}
+window.openCheckPanel_ = openCheckPanel;
 
 function renderChat() {
   const log = $('#chat-log');
@@ -890,36 +2089,105 @@ function renderChat() {
 function msgHTML(m, idx) {
   if (m.role === 'dice') {
     const cls = m.crit === 'nat20' ? 'pass' : (m.crit === 'nat1' ? 'fail' : (m.verdict === 'pass' ? 'pass' : m.verdict === 'fail' ? 'fail' : ''));
-    return `<div class="msg dice"><div class="dice-card ${cls}">
+    const by = ROLL_BY[m.by || 'player'] || ROLL_BY.player;
+    const hid = m.by === 'hidden' && !m.revealed;
+    const holder = m.whoName || m.note || '';
+    return `<div class="msg dice"><div class="dice-card ${cls} ${by.cls}">
+      <div class="dby">${by.icon}<b>${esc(by.chip)}</b>${holder ? `<em>${esc(holder)}</em>` : ''}</div>
       ${m.label ? `<div class="dl ${m.crit || ''}">${esc(m.label)}</div>` : ''}
-      <div class="dd">${esc(m.detail)}</div>
-      <div class="dv">${m.total}</div>
-      ${m.compare ? `<div class="dc">${esc(m.compare)}</div>` : ''}
-      ${m.note ? `<div class="dc" style="color:var(--ink-3)">${esc(m.note)}</div>` : ''}
+      ${hid
+        ? `<div class="dd">DM 私下掷了一次骰</div><div class="dv hid">?</div>
+           <button class="mk" onclick="revealRoll_(${idx})">👁 揭示骰点</button>`
+        : `<div class="dd">${esc(m.detail || '')}</div><div class="dv">${m.total}</div>`}
+      ${(!hid && m.compare) ? `<div class="dc">${esc(m.compare)}</div>` : ''}
+      ${m.intent ? `<div class="di">意图 · ${esc(m.intent)}</div>` : ''}
+      ${m.cond ? `<div class="dc cond-note">⚠️ ${esc(m.cond)}</div>` : ''}
       <div class="dcrit">${m.crit === 'nat20' ? '★ 自然 20 · 大成功' : m.crit === 'nat1' ? '✖ 自然 1 · 大失败' : ''}</div>
     </div></div>`;
   }
-  if (m.role === 'sys') return `<div class="msg sys"><div class="body">— ${esc(m.text)} —</div></div>`;
+  if (m.role === 'feat') {
+    return `<div class="msg feat"><div class="feat-card">
+      <div class="fc-hd"><span class="fc-ico">${esc(m.icon || '✦')}</span><b>${esc(m.name || '能力')}</b>
+        ${m.note ? `<span class="fc-who">${esc(m.note)}</span>` : ''}</div>
+      <div class="fc-bd">${fmtText(m.text || '')}</div>
+      ${m.footer ? `<div class="fc-ft">${esc(m.footer)}</div>` : ''}
+    </div></div>`;
+  }
+  if (m.role === 'sys') {
+    const v = isVerdictSys(m.text);
+    return `<div class="msg sys${v ? ' verdict' : ''}"><div class="body">${v ? '' : '— '}${esc(m.text)}${v ? '' : ' —'}</div></div>`;
+  }
   if (m.role === 'player') {
     return `<div class="msg player"><div class="who">${esc(m.name || '你')}</div><div class="body">${fmtText(m.text)}</div></div>`;
   }
-  const markers = (state.settings.markerOn && m.markers && m.markers.length)
-    ? `<div class="mk-row">${m.markers.map((k, j) => mkHTML(m, idx, j, k)).join('')}</div>` : '';
+  const markers = verdictBlock(m, idx);
   const retry = (idx === state.chat.length - 1 && !(NET.on && NET.role === 'player'))
     ? `<div class="mk-row"><button class="mk" onclick="regenerate_()">↻ 让 DM 重新叙述这一段</button></div>` : '';
   return `<div class="msg dm"><div class="who">🜂 地下城主 · DM</div><div class="body">${fmtText(m.text)}</div>${markers}${retry}</div>`;
 }
 
+/* DM 回复里的「判定与结算」独立成块，与上面那段叙事分开：
+   掷骰（谁掷一目了然）、DM 的判定说明、以及要落地的数值结算。*/
+function verdictBlock(m, idx) {
+  if (!state.settings.markerOn || !m.markers || !m.markers.length) return '';
+  const rolls = [], texts = [], rest = [];
+  m.markers.forEach((k, j) => {
+    if (k.type === 'verdict') texts.push(k);
+    else if (['atk', 'atkr', 'dmroll', 'hidcheck'].indexOf(k.type) >= 0) rolls.push({ k, j });
+    else rest.push({ k, j });
+  });
+  const rollHTML = rolls.map(o => mkHTML(m, idx, o.j, o.k)).join('');
+  const restHTML = rest.map(o => mkHTML(m, idx, o.j, o.k)).join('');
+  if (!rollHTML && !restHTML && !texts.length) return '';
+  return `<div class="dm-verdict">
+      <div class="dv-hd"><span class="dv-ico">⚖</span>判定与结算</div>
+      ${texts.length ? `<ul class="dv-notes">${texts.map(t => `<li>${fmtText(t.text)}</li>`).join('')}</ul>` : ''}
+      ${rollHTML ? `<div class="dv-lab">掷骰</div><div class="mk-row">${rollHTML}</div>` : ''}
+      ${restHTML ? `<div class="dv-lab">结算</div><div class="mk-row">${restHTML}</div>` : ''}
+    </div>`;
+}
+
+/* 结算类的系统流水（扣血、状态、先攻……）单独一套样式，便于和叙事分开看 */
+const VERDICT_MARKS = ['🩸', '⚔️', '⚔', '✚', '⚠️', '⚠', '❤️', '❤', '🪙', '✦', '🌙', '⏳', '🎲', '🌑', '🜂'];
+function isVerdictSys(t) { return VERDICT_MARKS.some(x => String(t || '').startsWith(x)); }
+
+window.revealRoll_ = idx => {
+  const m = state.chat[idx];
+  if (!m) return;
+  m.revealed = true;
+  renderChat();
+};
+
 function mkHTML(m, mi, j, k) {
   const done = m.mkDone && m.mkDone[j];
+  const who = k.target ? `${k.target} ` : '';
   let label = '', cls = '';
   if (k.type === 'check') {
-    label = `🎯 ${k.name} 检定${k.dc ? ` · DC ${k.dc}` : ''}`;
-  } else if (k.type === 'dmg')  { label = `🩸 受到 ${k.val} 点伤害`; cls = 'dmg'; }
-  else if (k.type === 'heal')   { label = `✚ 恢复 ${k.val} 点生命`; cls = 'heal'; }
-  else if (k.type === 'xp')     { label = `✦ 获得 ${k.val} 点经验`; cls = 'xp'; }
-  else if (k.type === 'gold')   { label = `🪙 金币 ${k.val >= 0 ? '+' : ''}${k.val}`; cls = 'xp'; }
-  else if (k.type === 'hp')     { label = `❤️ 当前 HP ${k.val}`; cls = 'dmg'; }
+    label = `🜍 玩家掷 · ${k.name} 检定${k.dc ? ` · DC ${k.dc}` : ''}`;
+  } else if (k.type === 'atkr') {
+    label = `🜂 DM 掷 · ${k.who || '敌人'} 攻击 ${k.target}` +
+            `${k.bonus ? `（+${k.bonus}${k.dice ? ' · ' + k.dice : ''}）` : ''}`;
+    cls = 'dmg';
+  } else if (k.type === 'dmroll') {
+    const t = k.kind === 'dmg'
+      ? `伤害 ${k.dice || ''}${k.target ? ' → ' + k.target : ''}`
+      : k.kind === 'table'
+        ? `投掷 ${k.dice || '1d20'}`
+        : `${k.bonus ? `+${k.bonus} ` : ''}${k.dc ? `对抗 DC ${k.dc}` : '检定'}`;
+    label = `🜂 DM 掷 · ${k.who} ${t}`;
+    cls = k.kind === 'dmg' ? 'dmg' : 'xp';
+  } else if (k.type === 'hidcheck') {
+    label = `🌑 DM 暗骰 · ${k.who}${k.name ? ' ' + k.name : ''}${k.dc ? ` · DC ${k.dc}` : ''}`;
+    cls = 'hid';
+  } else if (k.type === 'dmg')  { label = `🩸 ${who}−${k.val} HP${k.rolled ? `（${k.rolled}）` : ''}`; cls = 'dmg'; }
+  else if (k.type === 'heal')   { label = `✚ ${who}+${k.val} HP${k.rolled ? `（${k.rolled}）` : ''}`; cls = 'heal'; }
+  else if (k.type === 'xp')     { label = `✦ ${who}获得 ${k.val} 经验`; cls = 'xp'; }
+  else if (k.type === 'gold')   { label = `🪙 ${who}金币 ${k.val >= 0 ? '+' : ''}${k.val}`; cls = 'xp'; }
+  else if (k.type === 'hp')     { label = `❤️ ${who}HP 设为 ${k.val}`; cls = 'dmg'; }
+  else if (k.type === 'cond')   { label = `${k.off ? '✚ 解除' : '⚠️ 施加'} ${who}${k.name}`; cls = k.off ? 'heal' : 'dmg'; }
+  else if (k.type === 'init')   { label = `⚔️ 加入先攻 ${k.name}${k.init != null ? ` 先攻 ${k.init}` : ''}${k.hp != null ? ` · ${k.hp} HP` : ''}`; cls = 'xp'; }
+  else if (k.type === 'atk')    { label = `⚠️ ${k.target} 被攻击（DM 给定 总值 ${k.total}${k.val ? ` · 命中 ${k.val}` : ''}）`; cls = 'dmg'; }
+  else return '';
   return `<button class="mk ${cls} ${done ? 'done' : ''}" ${done ? 'disabled' : ''} onclick="applyMarker_(${mi},${j})">${esc(label)}</button>`;
 }
 
@@ -929,20 +2197,79 @@ window.applyMarker_ = (mi, j) => {
   m.mkDone = m.mkDone || {};
   if (m.mkDone[j]) return;
   const c = activeChar();
+
   if (k.type === 'check') {
     const dc = k.dc || 15;
-    doCheck(k.name, dc, 'normal', null);
-  } else if (!c) { toast('没有选中的角色', 'err'); return; }
-  else if (k.type === 'dmg') { c.hp = clamp(c.hp - k.val, 0, c.maxHp); addSys(`${c.name} 受到 ${k.val} 点伤害（HP ${c.hp}/${c.maxHp}）`); }
-  else if (k.type === 'heal') { c.hp = clamp(c.hp + k.val, 0, c.maxHp); addSys(`${c.name} 恢复 ${k.val} 点生命（HP ${c.hp}/${c.maxHp}）`); }
-  else if (k.type === 'xp') { gainXp(c, k.val); }
-  else if (k.type === 'gold') { c.gold = Math.max(0, (c.gold || 0) + k.val); addSys(`${c.name} 金币 ${k.val >= 0 ? '+' : ''}${k.val}（现 ${c.gold}）`); }
+    doCheck(k.name, dc, 'normal', null, lastUndeclaredAction());
+  } else if (k.type === 'init') {
+    if (combatUnits().some(u => u.name === k.name)) { toast('先攻序列里已经有「' + k.name + '」了', 'err'); return; }
+    const u = addUnit(k.name, k.init, k.hp, k.ac);
+    addSys(`⚔️ ${u.name} 加入战斗（先攻 ${u.init} · ${u.hp} HP · AC ${u.ac}）`);
+    renderCombat(); renderTable(); netPushCombat(); persist();
+  } else if (k.type === 'cond') {
+    const t = targetInfo(k.target);
+    if (!t || !t.char) { toast('找不到目标：' + (k.target || '（未指定角色）'), 'err'); return; }
+    if (k.off) removeCond(t.char, k.name);
+    else addCond(t.char.name, k.name);
+    if (t.char.conditions) t.char.conditions = t.char.conditions; // 保持引用
+    renderSheet(); renderPartySide(); persist();
+  } else if (k.type === 'atkr') {
+    dmRoll({ who: k.who, kind: 'attack', bonus: k.bonus, dice: k.dice, val: k.val, target: k.target, ac: k.ac });
+  } else if (k.type === 'dmroll') {
+    if (k.kind === 'dmg' && k.dice) dmRoll({ who: k.who, kind: 'dmg', dice: k.dice, target: k.target });
+    else if (k.kind === 'table') dmRoll({ who: k.who, kind: 'table', dice: k.dice || '1d20', label: k.who + ' · 投掷' });
+    else dmRoll({ who: k.who, kind: k.kind === 'save' ? 'save' : 'check', bonus: k.bonus, dc: k.dc });
+  } else if (k.type === 'hidcheck') {
+    hiddenCheck(k.who, k.name, k.dc);
+  } else if (k.type === 'verdict') {
+    return;
+  } else if (k.type === 'atk') {
+    const t = targetInfo(k.target);
+    if (!t) { toast('找不到目标：' + k.target, 'err'); return; }
+    const ac = t.unit && t.unit.enemy ? (t.unit.ac || 13) : (t.char ? t.char.ac : 13);
+    const total = k.total == null ? 0 : k.total;
+    const hit = total >= ac;
+    let msg = `🎲 ${t.name} 被攻击：总值 ${total} 对抗 AC ${ac} — ${hit ? '命中' : '失手'}`;
+    if (hit && k.val) {
+      const res = applyHpChange(k.target, -k.val);
+      if (res) msg += ` · 受到 ${k.val} 点伤害，剩余 ${res.hp}/${res.max}`;
+    }
+    addSys(msg);
+    renderChat(); renderSheet(); renderPartySide(); syncCombatFromChars(); renderCombat(); persist();
+  } else {
+    const ref = k.target || '';
+    if (k.type === 'dmg' || k.type === 'heal' || k.type === 'hp') {
+      const t = targetInfo(ref);
+      if (!t) { toast(ref ? '找不到目标：' + ref : '请先选中一名角色', 'err'); return; }
+      if (k.type === 'hp') {
+        const cur = t.unit && t.unit.enemy ? (t.unit.hp || 0) : (t.char ? t.char.hp : 0);
+        const res = applyHpChange(ref, k.val - cur);
+        if (res) addSys(`❤️ ${res.name} HP 设为 ${res.hp}/${res.max}`);
+      } else {
+        const res = applyHpChange(ref, k.type === 'dmg' ? -k.val : k.val);
+        if (res) addSys(`${res.name} ${k.type === 'dmg' ? '受到 ' + k.val + ' 点伤害' : '恢复 ' + k.val + ' 点生命'}（HP ${res.hp}/${res.max}）`);
+      }
+      renderPartySide(); renderSheet(); renderCombat(); renderBag();
+    } else if (k.type === 'xp') {
+      const t = targetInfo(ref); const cc = (t && t.char) || activeChar();
+      if (!cc) { toast('没有可结算的角色', 'err'); return; }
+      gainXp(cc, k.val);
+    } else if (k.type === 'gold') {
+      const t = targetInfo(ref); const cc = (t && t.char) || activeChar();
+      if (!cc) { toast('没有可结算的角色', 'err'); return; }
+      cc.gold = Math.max(0, (cc.gold || 0) + k.val);
+      addSys(`🪙 ${cc.name} 金币 ${k.val >= 0 ? '+' : ''}${k.val}（现 ${cc.gold}）`);
+      renderSheet();
+    } else { toast('未知的指令块', 'err'); return; }
+  }
+
   m.mkDone[j] = true;
   if (NET.on) netSend(NET.role === 'host' ? 'h' : 'c', 'mkdone', { msgId: m.id, j });
   // 自动重绘（保留滚动）
   const log = $('#chat-log'); const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 120;
   renderChat(); if (!atBottom) log.scrollTop = log.scrollHeight - 200;
   renderPartySide(); renderSheet(); renderBag(); persist();
+  try { netSyncMyChar(); } catch (_) {}
 };
 
 function gainXp(c, n) {
@@ -986,14 +2313,22 @@ window.setActive_ = id => { state.activeCharId = id; persist(); renderPartySide(
 /* 侧栏：先攻 */
 function renderCombat() {
   const cb = state.combat;
-  $('#combat-card').style.display = cb.on ? '' : 'none';
-  if (!cb.on) return;
+  if (!cb || !cb.on) { $('#combat-card').style.display = 'none'; return; }
+  $('#combat-card').style.display = '';
+  syncCombatFromChars();
   $('#combat-round').textContent = '第 ' + cb.round + ' 轮';
-  $('#combat-list').innerHTML = cb.order.map((o, i) => `
-    <div class="cb-item ${i === cb.turn ? 'turn' : ''} ${o.hp <= 0 ? 'dead' : ''}">
+  $('#combat-list').innerHTML = (cb.order || []).map((o, i) => `
+    <div class="cb-item ${i === cb.turn ? 'turn' : ''} ${o.hp <= 0 ? 'dead' : ''}" onclick="cbFocus_(${i})" title="点击切到该角色 / 查看数值">
       <div class="cb-init">${o.init}</div>
-      <div class="cb-name">${esc(o.name)}${o.enemy ? ' <span class="muted" style="font-size:10px">敌</span>' : ''}</div>
+      <div class="cb-name">${esc(o.name)}${o.enemy ? ' <span class="muted" style="font-size:10px">敌 AC ' + (o.ac || 13) + '</span>' : ''}
+        <div class="cb-bar"><i style="width:${clamp((o.hp / (o.maxHp || 1)) * 100, 0, 100)}%"></i></div>
+      </div>
       <span class="cb-hp">${o.hp}/${o.maxHp}</span>
+      <div class="cb-acts" onclick="event.stopPropagation()">
+        <button class="cb-mini" onclick="cbDelta_(${i},-1,1)">−1</button>
+        <button class="cb-mini" onclick="cbDelta_(${i},-1,5)">−5</button>
+        <button class="cb-mini heal" onclick="cbDelta_(${i},1,5)">+5</button>
+      </div>
     </div>`).join('') || '<p class="muted" style="font-size:12.5px">空。</p>';
 }
 
@@ -1007,6 +2342,245 @@ function renderBag() {
     ${inv.length ? inv.map(i => `<div class="bag-item"><span>· ${esc(i)}</span></div>`).join('') : '<p class="muted" style="font-size:12.5px;padding-top:6px">行囊空空。</p>'}
     ${(c.spells && c.spells.length) ? `<div class="sp-sec" style="margin-top:12px"><h4>法术 <em>${c.spells.length}</em></h4>${c.spells.map(s=>`<div class="bag-item"><span>✨ ${esc(s)}</span></div>`).join('')}</div>` : ''}`;
 }
+
+/* ─────────────── 9b. 能力面板 · 状态 · 战斗控制台 ─────────────── */
+
+/* 常见怪物：HP / AC 为典型值，随时可在控制台里改
+   ab / dmg 是它们的攻击加值与伤害骰 —— DM 掷骰台靠这两项真的掷出去 */
+const MONSTERS = [
+  { n:'地精',       hp:7,   ac:15, init:2,  cr:'1/4', ab:4,  dmg:'1d6+2',  atk:'弯刀' },
+  { n:'哥布林弓手', hp:7,   ac:13, init:2,  cr:'1/4', ab:4,  dmg:'1d6+2',  atk:'短弓' },
+  { n:'强盗',       hp:11,  ac:12, init:1,  cr:'1/8', ab:3,  dmg:'1d6+1',  atk:'弯刀' },
+  { n:'邪教徒',     hp:9,   ac:12, init:1,  cr:'1/8', ab:3,  dmg:'1d6+1',  atk:'弯刀' },
+  { n:'骷髅',       hp:13,  ac:13, init:2,  cr:'1/4', ab:4,  dmg:'1d6+2',  atk:'短剑' },
+  { n:'僵尸',       hp:22,  ac:8,  init:-2, cr:'1/4', ab:3,  dmg:'1d6+1',  atk:'猛击' },
+  { n:'巨鼠',       hp:7,   ac:12, init:2,  cr:'1/8', ab:4,  dmg:'1d4+2',  atk:'啃咬' },
+  { n:'狼',         hp:11,  ac:13, init:2,  cr:'1/4', ab:4,  dmg:'2d4+2',  atk:'啃咬' },
+  { n:'兽人',       hp:15,  ac:13, init:1,  cr:'1/2', ab:5,  dmg:'1d12+3', atk:'战斧' },
+  { n:'食尸鬼',     hp:22,  ac:12, init:2,  cr:'1',   ab:4,  dmg:'2d4+2',  atk:'爪击' },
+  { n:'棕熊',       hp:34,  ac:11, init:0,  cr:'1',   ab:5,  dmg:'2d6+4',  atk:'爪击' },
+  { n:'食人魔',     hp:59,  ac:11, init:-1, cr:'2',   ab:6,  dmg:'2d8+4',  atk:'巨棒' },
+  { n:'石像鬼',     hp:52,  ac:15, init:0,  cr:'2',   ab:4,  dmg:'1d6+2',  atk:'啃咬' },
+  { n:'幽魂',       hp:45,  ac:13, init:2,  cr:'4',   ab:6,  dmg:'3d6+3',  atk:'吸取生命' },
+  { n:'幼年红龙',   hp:75,  ac:17, init:0,  cr:'4',   ab:7,  dmg:'2d6+4',  atk:'啃咬' },
+  { n:'巨魔',       hp:84,  ac:15, init:2,  cr:'5',   ab:5,  dmg:'2d6+4',  atk:'爪击' },
+  { n:'石像守卫',   hp:100, ac:17, init:-1, cr:'7',   ab:10, dmg:'3d8+7',  atk:'猛击' },
+  { n:'青年巨龙',   hp:178, ac:18, init:0,  cr:'10',  ab:10, dmg:'2d10+6', atk:'啃咬' },
+];
+
+/* 先攻里的名字常带编号（地精A、地精#2、哥布林弓手 3），按词根回查怪物表 */
+function guessMob(name) {
+  const s = String(name || '').replace(/[\s#0-9A-Za-z（(）)]+$/, '').trim() || String(name || '').trim();
+  if (!s) return null;
+  let hit = MONSTERS.find(m => m.n === s);
+  if (hit) return hit;
+  hit = MONSTERS.find(m => s.startsWith(m.n) || m.n.startsWith(s));
+  if (hit) return hit;
+  return MONSTERS.find(m => s.includes(m.n)) || null;
+}
+
+/* 角色卡的「能力」面板 */
+function abilityPanelHTML(c) {
+  const sr = restSummary(c);
+  const feats = featsOf(c);
+  const act = feats.filter(f => f.act !== 'passive');
+  const pas = feats.filter(f => f.act === 'passive');
+  const ACTNAME = { action:'动作', bonus:'附赠动作', reaction:'反应', free:'自由 / 其他', rest:'休息' };
+  const groups = [];
+  ['action','bonus','reaction','free','rest'].forEach(a => {
+    const list = act.filter(f => (f.act || 'free') === a);
+    if (!list.length) return;
+    groups.push(`<div class="fg-label">${ACTNAME[a]}</div>
+      <div class="feat-grid">
+        ${list.map(f => {
+          const ready = !f.res || (c.res[f.res] || 0) > 0;
+          const cost = f.res ? `${RES_DEFS[f.res].icon}${RES_DEFS[f.res].name} ${c.res[f.res] || 0}/${c.resMax[f.res]}` : (f.slot ? '消耗法术位' : '');
+          return `<button class="feat-btn ${ready ? '' : 'off'}" onclick="useFeature_('${f.id}')" title="${esc(f.desc)}">
+            <span class="fb-ico">${f.icon || '✦'}</span>
+            <span class="fb-main"><b>${esc(f.name)}</b>${cost ? `<i>${esc(cost)}</i>` : ''}</span>
+          </button>`;
+        }).join('')}
+      </div>`);
+  });
+  const pools = `<div class="ab-block">
+      <div class="ab-block-hd">资源 <em>休息后恢复</em></div>
+      <div class="pool-row">
+        ${sr.res.map(r => `<span class="pool ${r.cur > 0 ? '' : 'off'}" title="${esc((RES_DEFS[r.k] || {}).use || '')}">${r.icon}${r.name} <b>${r.cur}</b>/${r.max}</span>`).join('')}
+        <span class="pool hd" onclick="spendHitDie_()" title="花费 1 颗生命骰回血（短休时用）">🎲生命骰 <b>${sr.hitDice.cur}</b>/${sr.hitDice.max}</span>
+      </div></div>`;
+  const slots = sr.slots.length ? `<div class="ab-block">
+      <div class="ab-block-hd">法术位 <em>点法术库施放</em></div>
+      <div class="pool-row">
+        ${sr.slots.map(s => `<span class="pool ${s.cur > 0 ? '' : 'off'}">${s.pact ? '魔契 ' : ''}${s.lv} 环 <b>${s.cur}</b>/${s.max}</span>`).join('')}
+        <button class="chip-btn tiny" onclick="openSpellbook_()">📖 法术库</button>
+      </div></div>` : '';
+  const conds = `<div class="ab-block">
+      <div class="ab-block-hd">状态 <em>点 ✕ 移除</em></div>
+      <div class="pool-row">
+        ${(c.conditions || []).map(k => `<span class="cond ${(COND_MAP[k] || {}).dis ? 'bad' : ''}" title="${esc((COND_MAP[k] || {}).desc || '')}">${(COND_MAP[k] || {}).icon || '•'}${esc(k)}<b onclick="dropCond_('${esc(k)}')">✕</b></span>`).join('') || '<span class="muted" style="font-size:11px">无异常状态</span>'}
+        <button class="chip-btn tiny" onclick="openCondPicker_()">＋ 状态</button>
+      </div></div>`;
+  const passives = pas.length ? `<div class="ab-block">
+      <div class="ab-block-hd">被动特性</div>
+      <div class="passive-list">${pas.map(f => `<span class="pas" title="${esc(f.desc)}">${f.icon || '•'} ${esc(f.name)}</span>`).join('')}</div>
+    </div>` : '';
+  return `<div class="sp-sec">
+      <h4>能力 <em>职业特性 · 资源 · 法术位</em></h4>
+      ${pools}${slots}${conds}
+      ${groups.join('') || '<p class="muted" style="font-size:11.5px">这个等级还没有可主动使用的职业特性。</p>'}
+      ${passives}
+      <div class="sp-actions" style="margin-top:9px;padding-top:9px">
+        <button class="chip-btn" onclick="restShort_('${c.id}')">⏳ 短休</button>
+        <button class="chip-btn" onclick="restLong_('${c.id}')">🌙 长休</button>
+        <button class="chip-btn" onclick="openAbilityPanel()">📜 特性全览</button>
+      </div>
+    </div>`;
+}
+
+function openAbilityPanel() {
+  const c = activeChar();
+  if (!c) { toast('请先在右侧面板选中一名角色', 'err'); return; }
+  const lv = c.level || 1, kind = casterKind(c);
+  const all = CLASS_FEATURES[c.cls] || [];
+  const ACTNAME = { action:'动作', bonus:'附赠动作', reaction:'反应', free:'自由 / 其他', passive:'被动', rest:'休息' };
+  openModal({
+    title: `${c.name} · ${c.cls} 特性`, wide: true,
+    body: `<p class="muted" style="margin-bottom:12px;line-height:1.75">
+        ${esc(c.race)} · ${esc(c.cls)} Lv.${lv} · 熟练加值 ${sign(PROF(lv))}${kind !== 'none' ? ` · 施法者（${kind === 'pact' ? '魔契法术位' : kind === 'half' ? '半施法者' : '全施法者'}）` : ''}<br>
+        灰掉的表示等级未到或资源已用尽。资源在短休 / 长休后恢复；法术位在长休后恢复（魔契法术位短休即可）。</p>
+      <div class="ablist">
+        ${all.map(f => {
+          const locked = (f.lv || 1) > lv;
+          const ready = !locked && (!f.res || (c.res[f.res] || 0) > 0) && !(f.exec.kind === 'smite' && slotTotal(c) <= 0);
+          const pool = f.res && RES_DEFS[f.res];
+          return `<div class="abrow ${locked ? 'lock' : ''}">
+            <div class="ar-hd"><span class="ar-ico">${f.icon || '✦'}</span><b>${esc(f.name)}</b>
+              <span class="ar-tag">${esc(ACTNAME[f.act] || '自由')}${(f.lv || 1) > 1 ? ` · ${f.lv} 级` : ''}</span>
+              ${locked ? '<span class="ar-tag lk">未解锁</span>' : ''}</div>
+            <div class="ar-desc">${esc(f.desc)}</div>
+            ${pool ? `<div class="ar-cost">${pool.icon}${esc(pool.name)} ${c.res[f.res] || 0}/${c.resMax[f.res]} · ${esc(pool.use || '')}</div>` : ''}
+            ${!locked && f.act !== 'passive' ? `<div class="ar-btns"><button class="btn ${ready ? 'primary' : 'ghost'} sm" onclick="useFeature_('${f.id}');closeModal()">${ready ? '使用' : '资源不足'}</button></div>` : ''}
+          </div>`;
+        }).join('') || '<p class="muted">这个职业暂时没有登记特性。</p>'}
+      </div>
+      ${kind !== 'none' ? `<div style="margin-top:14px"><button class="btn" onclick="closeModal();openSpellbook_()">📖 打开法术库</button></div>` : ''}`,
+    footer: `<button class="btn ghost" onclick="closeModal()">关闭</button>`
+  });
+}
+window.openAbilityPanel = openAbilityPanel;
+
+window.dropCond_ = k => {
+  const c = activeChar(); if (!c) return;
+  removeCond(c, k);
+  addSys(`✚ ${c.name} 解除了「${k}」`);
+  renderChat(); renderSheet(); renderPartySide(); persist(); try { netSyncMyChar(); } catch (_) {}
+};
+window.openCondPicker_ = () => {
+  const c = activeChar(); if (!c) { toast('请先选择一名角色', 'err'); return; }
+  openModal({
+    title: '施加状态 · ' + c.name, narrow: true,
+    body: `<p class="muted" style="margin-bottom:12px;line-height:1.7">标着<b>劣势</b>的状态，会让这名角色的属性检定与攻击自动带上劣势。</p>
+      <div class="cond-grid">
+        ${CONDITIONS.map(k => `<button class="cond-pick ${k.dis ? 'bad' : ''}" onclick="pickCond_('${esc(k.k)}')" title="${esc(k.desc)}">
+          <b>${k.icon}${esc(k.k)}</b><span>${esc(k.desc)}</span></button>`).join('')}
+      </div>`,
+    footer: `<button class="btn ghost" onclick="closeModal()">关闭</button>`
+  });
+};
+window.pickCond_ = k => {
+  const c = activeChar(); if (!c) return;
+  if (!addCond(c.name, k)) toast('已经处于该状态');
+  closeModal(); renderChat(); renderSheet(); renderPartySide(); persist(); try { netSyncMyChar(); } catch (_) {}
+};
+
+/* ── 战斗控制台 ── */
+function cbcRowsHTML() {
+  const cb = state.combat || {};
+  const rows = (cb.order || []).map((o, i) => `
+      <div class="cbc-row ${i === cb.turn && cb.on ? 'turn' : ''} ${o.hp <= 0 ? 'dead' : ''}">
+        <span class="cbc-init" title="先攻"><input type="number" value="${o.init}" onchange="cbcSet_(${i},'init',this.value)"></span>
+        <span class="cbc-name"><input type="text" value="${esc(o.name)}" onchange="cbcSet_(${i},'name',this.value)">${o.enemy ? '<i class="tag-enemy">敌</i>' : ''}</span>
+        <span class="cbc-ac" title="AC"><input type="number" value="${o.ac || 13}" onchange="cbcSet_(${i},'ac',this.value)"></span>
+        <span class="cbc-hp"><input type="number" value="${o.hp}" onchange="cbcSet_(${i},'hp',this.value)"><em>/${o.maxHp}</em></span>
+        <span class="cbc-btns">
+          <button class="cb-mini" onclick="cbcDelta_(${i},-1,1)">−1</button>
+          <button class="cb-mini" onclick="cbcDelta_(${i},-1,5)">−5</button>
+          <button class="cb-mini heal" onclick="cbcDelta_(${i},1,5)">+5</button>
+          <button class="cb-mini x" onclick="cbcDel_(${i})" title="移出战斗">✕</button>
+        </span>
+      </div>`).join('');
+  return rows || '<p class="muted" style="font-size:12.5px">还没有任何单位。点上面「＋ 添加敌人」放几个进去。</p>';
+}
+function cbcRefresh() { const el = document.getElementById('cbc-rows'); if (el) el.innerHTML = cbcRowsHTML(); }
+window.cbDelta_ = (i, dir, n) => {
+  const o = combatUnits()[i]; if (!o) return;
+  const res = applyHpChange(o.id, dir * n);
+  if (!res) return;
+  addSys(`${res.name} ${dir < 0 ? '受到 ' + n + ' 点伤害' : '恢复 ' + n + ' 点生命'}（HP ${res.hp}/${res.max}）`);
+  renderChat(); renderCombat(); renderSheet(); renderPartySide(); persist(); netPushCombat();
+};
+window.cbcDelta_ = (i, dir, n) => { window.cbDelta_(i, dir, n); cbcRefresh(); };
+window.cbcSet_ = (i, field, val) => {
+  const o = combatUnits()[i]; if (!o) return;
+  if (field === 'name') {
+    const nm = String(val || '').trim();
+    if (!nm) { cbcRefresh(); return; }
+    const c = getChar(o.id);
+    if (c) { c.name = nm; renderSheet(); renderPartySide(); }
+    else o.name = nm;
+  } else {
+    const n = parseInt(val, 10); if (isNaN(n)) { cbcRefresh(); return; }
+    if (field === 'hp') { const res = applyHpChange(o.id, n - o.hp); if (res) addSys(`❤️ ${res.name} HP 设为 ${res.hp}/${res.max}`); }
+    else if (field === 'ac') o.ac = n;
+    else if (field === 'init') { o.init = n; (state.combat.order || []).sort((a, b) => b.init - a.init); }
+  }
+  renderChat(); renderCombat(); renderSheet(); renderPartySide(); persist(); netPushCombat(); cbcRefresh();
+};
+window.cbcDel_ = i => {
+  const o = combatUnits()[i]; if (!o) return;
+  removeUnit(o.id);
+  addSys(`（${o.name} 被移出战斗）`);
+  renderChat(); renderCombat(); renderTable(); persist(); netPushCombat(); cbcRefresh();
+};
+window.cbFocus_ = i => {
+  const o = combatUnits()[i]; if (!o) return;
+  const c = getChar(o.id);
+  if (c) { state.activeCharId = c.id; persist(); renderSheet(); renderPartySide(); renderQuick(); toast('已切到 ' + c.name); }
+  else toast(`${o.name} · ${o.hp}/${o.maxHp} HP · AC ${o.ac || 13}`);
+};
+window.openAddUnit_ = () => {
+  openModal({
+    title: '添加敌人', wide: true,
+    body: `<p class="muted" style="margin-bottom:10px;line-height:1.7">选一个常见怪物，或自己填。数值是典型值，进战斗后可以随时在控制台里改。</p>
+      <div class="mon-grid">
+        ${MONSTERS.map((m, i) => `<button class="mon-item" onclick="addMonster_(${i})"><b>${esc(m.n)}</b><span>CR ${esc(m.cr)} · ${m.hp} HP · AC ${m.ac}</span></button>`).join('')}
+      </div>
+      <div class="au-form">
+        <label class="field" style="flex:2;min-width:130px"><span>自定义名称</span><input type="text" id="au-name" placeholder="例如：熔炉祭司"></label>
+        <label class="field" style="width:78px"><span>数量</span><input type="number" id="au-n" value="1" min="1" max="20"></label>
+        <label class="field" style="width:78px"><span>HP</span><input type="number" id="au-hp" value="7"></label>
+        <label class="field" style="width:78px"><span>AC</span><input type="number" id="au-ac" value="13"></label>
+        <label class="field" style="width:86px"><span>先攻加值</span><input type="number" id="au-init" value="1"></label>
+      </div>`,
+    footer: `<button class="btn ghost" onclick="closeModal()">取消</button><button class="btn primary" onclick="addCustomUnit_()">＋ 添加</button>`
+  });
+};
+window.addMonster_ = i => {
+  const m = MONSTERS[i]; if (!m) return;
+  const u = addUnit(m.n, D(20) + m.init, m.hp, m.ac);
+  addSys(`⚔️ ${u.name} 加入战斗（先攻 ${u.init} · ${u.hp} HP · AC ${u.ac}）`);
+  closeModal(); renderChat(); renderCombat(); renderTable(); persist(); netPushCombat();
+};
+window.addCustomUnit_ = () => {
+  const name = (($('#au-name') || {}).value || '').trim() || '敌人';
+  const n = clamp(parseInt(($('#au-n') || {}).value, 10) || 1, 1, 20);
+  const hp = parseInt(($('#au-hp') || {}).value, 10) || 7;
+  const ac = parseInt(($('#au-ac') || {}).value, 10) || 13;
+  const im = parseInt(($('#au-init') || {}).value, 10) || 0;
+  for (let i = 0; i < n; i++) addUnit(n > 1 ? `${name} #${i + 1}` : name, D(20) + im, hp, ac);
+  addSys(`⚔️ ${name} ×${n} 加入战斗`);
+  closeModal(); renderChat(); renderCombat(); renderTable(); persist(); netPushCombat();
+};
 
 /* ─────────────── 10. 右侧角色面板 ─────────────── */
 
@@ -1068,6 +2642,8 @@ function renderSheet() {
       </div>
     </div>
 
+    ${abilityPanelHTML(c)}
+
     <div class="sp-sec">
       <h4>装备与法术</h4>
       <div class="inv-row"><span>🪙 金币</span><em>${c.gold || 0}</em></div>
@@ -1090,12 +2666,7 @@ window.toggleSheetMobile_ = () => {
 };
 window.openSheetChar_ = id => { state.activeCharId = id; persist(); setView('table'); renderSheet(); showDiceSheetHint(); };
 function showDiceSheetHint(){ openDrawer('#sheet-panel'); }
-window.longRest_ = id => {
-  const c = getChar(id); if (!c) return;
-  c.hp = c.maxHp; c.tempHp = 0;
-  addSys(`🌙 ${c.name} 完成长休，生命与法术位已恢复（HP ${c.hp}/${c.maxHp}）`);
-  renderPartySide(); renderSheet(); persist();
-};
+window.longRest_ = id => restLong(id);
 
 window.rollAbility_ = k => doCheck(AB[k].zh, null, 'normal', 'ability:' + k);
 window.rollSkill_  = n => doCheck(n, null, 'normal', 'skill:' + n);
@@ -1117,7 +2688,7 @@ function resolveCheck(name) {
   return { label: name, ab: null, bonus: c ? 0 : 0 };
 }
 
-function doCheck(name, dc, mode, hint) {
+function doCheck(name, dc, mode, hint, intent) {
   const c = activeChar();
   let bonus = 0, label = name;
   if (hint && hint.startsWith('ability:')) { const k = hint.slice(8); bonus = MOD(c.ab[k]); label = AB[k].zh + '检定'; }
@@ -1126,7 +2697,11 @@ function doCheck(name, dc, mode, hint) {
   else { const r = resolveCheck(name); bonus = r.bonus; label = r.label + (/检定|豁免/.test(r.label) ? '' : ' 检定'); }
   if (!c) { toast('请先选择一名角色', 'err'); return; }
 
-  const { v, pair, mode: md } = d20Roll({ mode });
+  // 中毒 / 恐慌 / 目盲 / 束缚 等状态自动施加劣势
+  let effMode = mode, condNote = '';
+  const badConds = condDis(c);
+  if (badConds.length && mode === 'normal') { effMode = 'dis'; condNote = `受「${badConds.join('、')}」影响，劣势`; }
+  const { v, pair, mode: md } = d20Roll({ mode: effMode });
   const total = v + bonus;
   const dlabel = label + (md === 'adv' ? '（优势）' : md === 'dis' ? '（劣势）' : '');
   const crit = v === 20 ? 'nat20' : v === 1 ? 'nat1' : '';
@@ -1135,19 +2710,134 @@ function doCheck(name, dc, mode, hint) {
 
   flashDice(v, dlabel, crit);
   pushMsg({
-    role:'dice', label: dlabel, detail, total, crit, verdict,
+    role:'dice', by:'player', label: dlabel, detail, total, crit, verdict,
+    intent: (intent || '').trim() || '',
+    cond: condNote,
     compare: dc ? `对抗 DC ${dc} — ${verdict === 'pass' ? '成功' : '失败'}` : '',
     note: `${c.name}`, ts: Date.now()
   });
   persist();
+  dmAfterRoll();          // 掷完把结果交给 DM，由它叙述这次检定的后果
 }
+
+/* 玩家主动检定：先写下「打算做什么」，再选一项掷骰，结果会立刻交给 DM 裁定 */
+function declareCheck(name, dc, mode, action, hint) {
+  const c = activeChar();
+  if (!c) { toast('请先在右侧面板选中一名角色', 'err'); return; }
+  const intent = (action || '').trim();
+  // 行动意图先作为一条发言进日志；paired 标记它「已配检定」，联机时主持台不会为它单独跑一次 AI
+  if (intent) pushMsg({ role:'player', name:c.name, text:intent, charId:c.id, paired:true, ts:Date.now() });
+  doCheck(name, dc, mode || 'normal', hint || null, intent);
+}
+
+/* ── 意图：DM 只看到骰点会一头雾水，所以掷骰前尽量收集「你想做什么」 ── */
+
+const INTENT_PRESETS = {
+  'skill:运动':   ['徒手攀上岩壁','撞开这扇门','把石盖掀起来','游过这段急流'],
+  'skill:体操':   ['从屋檐翻落着地','从人群中钻过去','挣脱绳索／拘束','沿着窄梁走过去'],
+  'skill:巧手':   ['摸走他腰间的钥匙','给武器做个小手脚','在牌堆里换一张','悄悄解开这个结'],
+  'skill:隐匿':   ['贴着墙根潜行过去','躲进阴影里避开视线','趁他不注意溜出门','藏起刚刚拿到的东西'],
+  'skill:奥秘':   ['辨认这枚符文的意思','回想关于这股魔力的传闻','判断这个法阵的作用','推断法术的施法者'],
+  'skill:历史':   ['回忆这枚纹章的来历','想起这个家族的旧事','考据墙上铭文的年代','判断这是哪个时代的造物'],
+  'skill:调查':   ['翻找这间屋子的线索','检查这具尸体的伤口','敲敲地板找暗格','比对两处痕迹是否一致'],
+  'skill:自然':   ['辨认这串脚印属于什么生物','判断这株植物是否有毒','从痕迹推测它过去多久','观察天气会怎么变'],
+  'skill:宗教':   ['辨认神像属于哪位神祇','回想这个仪式的禁忌','判断这座墓的葬俗','解读祷文的内容'],
+  'skill:驯兽':   ['让这头牲口安静下来','试着靠近那只受伤的狼','驱赶驮兽走过窄桥','安抚受惊的坐骑'],
+  'skill:医药':   ['检查同伴的伤口','判断这毒能不能解','想办法稳住他的呼吸','辨认这味草药的用途'],
+  'skill:察觉':   ['听门后有没有动静','观察四周有无埋伏','留意他说话时的神色','搜索地上可疑的痕迹'],
+  'skill:生存':   ['顺着脚印追踪下去','找一处能过夜的地方','辨认这是否可以吃','判断我们还有多久出林子'],
+  'skill:欺瞒':   ['谎称我们是商队的人','假装听不懂他们的话','掩饰刚才的失口','伪造一份通行凭据'],
+  'skill:威吓':   ['用刀抵住他的喉咙','压低声音威胁他','亮出我们的人数让他退缩','吓住这群围观的人'],
+  'skill:表演':   ['在酒馆里唱一曲分散注意','扮成行商混进去','演一出戏拖住他们','用杂耍吸引人群'],
+  'skill:说服':   ['请他冷静下来听我说','说服卫兵放我们进去','跟商人讲价','劝同伴别动手'],
+};
+
+const AB_PRESETS = {
+  str: ['强行推开／掰开','把它整个扛起来','用蛮力撑住坍塌的梁'],
+  dex: ['闪避／抢先出手','悄无声息地完成这套动作','稳住手上的精细操作'],
+  con: ['硬扛过去','忍住不吐露半个字','喝下／闻下这个不明的东西'],
+  int: ['回忆并推理出答案','把线索拼在一起','推算这件东西的做法'],
+  wis: ['凭直觉判断有无危险','留意反常的细节','分辨这是不是幻觉'],
+  cha: ['让他愿意听我说','把场面的节奏抓在手里','凭气场压住他们'],
+};
+
+function intentPresets(name, hint) {
+  if (hint && INTENT_PRESETS[hint]) return INTENT_PRESETS[hint];
+  if (hint && hint.startsWith('save:')) {
+    const k = hint.slice(5);
+    return [`硬撑住这次${AB[k].zh}冲击`, `避开突如其来的危险`, `稳住身体不被撼动`];
+  }
+  if (hint && hint.startsWith('ability:')) {
+    return AB_PRESETS[hint.slice(8)] || ['用这次检定解决眼前的问题'];
+  }
+  return ['仔细观察眼前的情况', '试探一下有没有危险', '回想与它相关的知识'];
+}
+
+/* 最近一条「说了但还没配检定」的玩家发言 —— 用来预填意图 */
+function lastUndeclaredAction() {
+  const logs = state.chat;
+  let li = -1;
+  for (let i = logs.length - 1; i >= 0; i--) {
+    if (logs[i].role === 'player' && (logs[i].text || '').trim()) { li = i; break; }
+  }
+  if (li < 0) return '';
+  if (logs.slice(li + 1).some(x => x.role === 'dice')) return '';   // 已配过检定就不算待定
+  return logs[li].text.trim();
+}
+
+let IT = null;
+
+function openIntentModal(name, dc, mode, hint) {
+  const c = activeChar();
+  if (!c) { toast('请先在右侧面板选中一名角色', 'err'); return; }
+  const box = $('#chat-text');
+  const typed = box ? box.value.trim() : '';
+  const pre = typed || lastUndeclaredAction() || '';
+  IT = { name, dc, mode, hint, typed };
+  openModal({
+    title: `掷「${name}」— 先说说你要做什么`,
+    narrow: true,
+    body: `<p class="muted" style="line-height:1.75;margin-bottom:12px">
+        DM 只看到骰点、不知道你想干什么，就没法接着往下讲。<br>
+        用一句话写下意图，它会<b>连同骰点一起</b>送到 DM 面前，由它来裁定成败并叙述后果。</p>
+      <label class="field"><span>我打算……（${esc(c.name)}）</span>
+        <input type="text" id="it-text" value="${esc(pre)}" placeholder="例如：我屏息听门后的动静"></label>
+      <div class="muted" style="font-size:11px;margin:12px 0 7px">不知道怎么说？点一句改改就行：</div>
+      <div class="it-presets">
+        ${intentPresets(name, hint).map(p => `<button class="chip-btn it-p">${esc(p)}</button>`).join('')}
+      </div>`,
+    footer: `<button class="btn ghost" onclick="intentSkip_()">不写意图，直接掷</button>
+             <button class="btn primary" onclick="intentGo_()">🎲 掷骰</button>`
+  });
+  const t = $('#it-text');
+  if (t) {
+    t.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); intentGo_(); } });
+    setTimeout(() => { t.focus(); t.select(); }, 50);
+  }
+  $$('.it-p').forEach(b => b.addEventListener('click', () => { if (t) { t.value = b.textContent; t.focus(); } }));
+}
+window.openIntentModal_ = openIntentModal;
+
+window.intentGo_ = () => {
+  const v = (($('#it-text') || {}).value || '').trim();
+  const it = IT; closeModal(); IT = null;
+  if (!it) return;
+  if (it.typed) { const b = $('#chat-text'); if (b) { b.value = ''; b.style.height = 'auto'; } }
+  declareCheck(it.name, it.dc, it.mode, v, it.hint);
+};
+window.intentSkip_ = () => {
+  const it = IT; closeModal(); IT = null;
+  if (!it) return;
+  if (it.typed) { const b = $('#chat-text'); if (b) { b.value = ''; b.style.height = 'auto'; } }
+  declareCheck(it.name, it.dc, it.mode, '', it.hint);
+};
 
 function doRoll(expr, note, label) {
   const r = rollExpr(expr);
   if (!r) { toast('骰子语法无法解析：' + expr, 'err'); return null; }
   const crit = (r.rolls.length === 1 && r.rolls[0].kind === 'd' && r.rolls[0].f === 20) ? (r.rolls[0].kept[0] === 20 ? 'nat20' : r.rolls[0].kept[0] === 1 ? 'nat1' : '') : '';
   flashDice(r.total, label || '骰点', crit);
-  pushMsg({ role:'dice', label: label || '命运投掷', detail: exprLabel(r), total: r.total, crit, note, ts: Date.now() });
+  pushMsg({ role:'dice', by:'player', label: label || '命运投掷', detail: exprLabel(r), total: r.total, crit, note, ts: Date.now() });
   persist();
   return r;
 }
@@ -1215,39 +2905,134 @@ function handleCommand(t) {
       doRoll(expr, note, note || '命运投掷'); return true;
     }
     case 'ra': case 'check': case '检定': {
-      if (!rest) { toast('用法：.ra 察觉 15', 'err'); return true; }
+      if (!rest) { toast('用法：.ra 察觉 15 我要听门后的动静', 'err'); return true; }
       const mm = rest.match(/^(\S+)\s*(?:dc)?\s*(\d+)?\s*(.*)$/i);
       const name = mm[1], dc = mm[2] ? parseInt(mm[2], 10) : null, desc = (mm[3] || '').trim();
-      if (desc) pushMsg({ role:'player', name: (activeChar()||{}).name || '你', text: desc, ts: Date.now() });
-      doCheck(name, dc, 'normal', null); return true;
+      const intent = desc || lastUndeclaredAction();
+      if (desc) pushMsg({ role:'player', name: (activeChar()||{}).name || '你', text: desc, paired:true, ts: Date.now() });
+      doCheck(name, dc, 'normal', null, intent); return true;
     }
     case 'adv': case 'dis': {
       const mm = rest.match(/^(\S+)\s*(\d+)?/);
       if (!mm) { toast('用法：.adv 隐匿 15', 'err'); return true; }
-      doCheck(mm[1], mm[2] ? parseInt(mm[2],10) : null, cmd === 'adv' ? 'adv' : 'dis', null); return true;
+      doCheck(mm[1], mm[2] ? parseInt(mm[2],10) : null, cmd === 'adv' ? 'adv' : 'dis', null, lastUndeclaredAction()); return true;
     }
     case 'atk': case '攻击': {
-      const c = activeChar(); if (!c) { toast('请先选择角色', 'err'); return true; }
-      const mm = rest.match(/^(\S+)\s*(\d+)?\s*([+-]\d+)?/);
+      if (!activeChar()) { toast('请先选择角色', 'err'); return true; }
+      if (!rest) { toast('用法：.atk 长剑 > 地精A　或　.atk 长剑 15', 'err'); return true; }
+      const tm = rest.match(/^(.*?)\s*(?:>|＞|→)\s*(.+)$/);
+      const weaponPart = (tm ? tm[1] : rest).trim();
+      const target = tm ? tm[2].trim() : '';
+      const mm = weaponPart.match(/^(\S+)\s*(\d+)?\s*([+-]\d+)?/);
       const weapon = mm ? mm[1] : '武器';
-      const ac = mm && mm[2] ? parseInt(mm[2], 10) : 13;
+      const ac = mm && mm[2] ? parseInt(mm[2], 10) : null;
       const extra = mm && mm[3] ? parseInt(mm[3], 10) : 0;
-      const isFinesse = /匕首|短剑|细剑|鞭|弓|弩/.test(weapon);
-      const k = isFinesse ? 'dex' : 'str';
-      const bonus = MOD(c.ab[k]) + PROF(c.level) + extra;
-      const { v } = d20Roll({});
-      const total = v + bonus;
-      const hit = v === 20 || (v !== 1 && total >= ac);
-      const dmgExpr = weapon.includes('巨') || weapon.includes('双手') ? '2d6' : (weapon.includes('短') || /匕首|飞刀/.test(weapon) ? '1d4' : '1d8');
-      const crit = v === 20 ? 'nat20' : v === 1 ? 'nat1' : '';
-      flashDice(v, `攻击 · ${weapon}`, crit);
-      let dmg = null;
-      if (hit) { dmg = rollExpr(dmgExpr + sign(MOD(c.ab[k])) + (v === 20 ? `+${dmgExpr}` : '')).total; }
-      pushMsg({
-        role:'dice', label:`攻击 · ${weapon}`, detail:`d20+${bonus}`, total, crit,
-        compare:`对抗 AC ${ac} — ${hit ? '命中' : '失手'}${dmg !== null ? ` · 伤害 ${dmg}` : ''}`,
-        note:c.name, ts:Date.now()
-      });
+      doAttack(weapon, { ac, extra, target });
+      return true;
+    }
+    case 'dmr': case 'dmroll': case '敌方': {
+      const q = rest.trim();
+      if (!q) { openDMPanel(); return true; }
+      // .dmr 地精A > 莉安  → 敌人攻击（真掷，自动取怪物表的加值与伤害）
+      const tm2 = q.match(/^(.*?)\s*[>＞→]\s*(.+)$/);
+      if (tm2) {
+        const who = tm2[1].trim(), tail = tm2[2].trim();
+        const parts2 = tail.split(/\s+/);
+        const target = parts2[0];
+        const bonusM = tail.match(/([+-]\d+)/);
+        const diceM = tail.match(/(\d*d\d+(?:[+-]\d+)?)/i);
+        mobAttack(who, target, { bonus: bonusM ? parseInt(bonusM[1], 10) : null, dice: diceM ? diceM[1] : null });
+        return true;
+      }
+      // .dmr 地精A DC 13 +1  → 敌人豁免
+      const dm2 = q.match(/^(\S+)\s+DC\s*(\d+)\s*([+-]\d+)?/i);
+      if (dm2) {
+        dmRoll({ who: dm2[1], kind: 'save', bonus: dm2[3] ? parseInt(dm2[3], 10) : 0, dc: parseInt(dm2[2], 10) });
+        return true;
+      }
+      // .dmr 1d20 天气  → 随机表
+      const diceM2 = q.match(/(\d*d\d+(?:[+-]\d+)?)/i);
+      if (diceM2) {
+        const lb = q.replace(diceM2[1], '').trim();
+        dmRoll({ who: lb || 'DM', kind: 'table', dice: diceM2[1], label: (lb || 'DM') + ' · 投掷' });
+        return true;
+      }
+      toast('用法：.dmr 地精A > 莉安　或　.dmr 地精A DC 13 +1　或　.dmr 1d20 天气', 'err');
+      return true;
+    }
+    case 'hid': case '暗骰': {
+      const parts2 = rest.split(/\s+/).filter(Boolean);
+      const dm2 = rest.match(/DC\s*(\d+)/i);
+      hiddenCheck(parts2[0] || '', parts2[1] || '察觉', dm2 ? parseInt(dm2[1], 10) : null);
+      return true;
+    }
+    case 'use': case 'feat': case '特性': case 'feats': {
+      const c = activeChar(); if (!c) { toast('请先选择角色', 'err'); return true; }
+      const q0 = rest.trim();
+      if (!q0) { openAbilityPanel(); return true; }
+      const tm = q0.match(/^(.*?)\s*(?:>|＞|→)\s*(.+)$/);
+      const q = (tm ? tm[1] : q0).trim();
+      const tgt = tm ? tm[2].trim() : '';
+      const all = CLASS_FEATURES[c.cls] || [];
+      const f = all.find(x => x.name === q || x.id === q) || all.find(x => x.name.includes(q) || (q && q.includes(x.name)));
+      if (!f) { toast(`${c.cls} 没有「${q}」这个特性`, 'err'); return true; }
+      useFeature(f.id, tgt);
+      return true;
+    }
+    case 'cast': case 'spell': case '施法': {
+      const c = activeChar(); if (!c) { toast('请先选择角色', 'err'); return true; }
+      const q = rest.trim();
+      if (!q) { openSpellbook(); return true; }
+      const sp = SPELL_LIB.find(s => s.n === q) || SPELL_LIB.find(s => s.n.includes(q));
+      if (!sp) { toast('法术库里没有「' + q + '」', 'err'); return true; }
+      castSpell(sp.n);
+      return true;
+    }
+    case 'rest': case 'short': case '短休': { restShort(); return true; }
+    case 'long': case '长休': { restLong(); return true; }
+    case 'init': case '先攻': {
+      const parts = rest.split(/\s+/).filter(Boolean);
+      if (!parts.length) { toast('用法：.init 地精A 12 7 13（名称 先攻 HP AC）', 'err'); return true; }
+      const u = addUnit(parts[0], parts[1] ? +parts[1] : null, parts[2] ? +parts[2] : null, parts[3] ? +parts[3] : null);
+      addSys(`⚔️ ${u.name} 加入战斗（先攻 ${u.init} · ${u.hp} HP · AC ${u.ac}）`);
+      renderChat(); renderCombat(); renderTable(); netPushCombat(); persist();
+      return true;
+    }
+    case 'dmg': case '伤害': {
+      const mm = rest.match(/^(?:(\S+)\s+)?(\d+)$/);
+      if (!mm) { toast('用法：.dmg 8　或　.dmg 地精A 8', 'err'); return true; }
+      const ref = mm[1] || '', n = parseInt(mm[2], 10);
+      const res = applyHpChange(ref, -n);
+      if (!res) { toast('找不到目标：' + (ref || '（未指定）'), 'err'); return true; }
+      addSys(`${res.name} 受到 ${n} 点伤害（HP ${res.hp}/${res.max}）`);
+      renderChat(); renderSheet(); renderPartySide(); syncCombatFromChars(); renderCombat(); persist();
+      return true;
+    }
+    case 'heal': case '治疗': {
+      const mm = rest.match(/^(?:(\S+)\s+)?(\d+)$/);
+      if (!mm) { toast('用法：.heal 6　或　.heal 莉安 6', 'err'); return true; }
+      const ref = mm[1] || '', n = parseInt(mm[2], 10);
+      const res = applyHpChange(ref, n);
+      if (!res) { toast('找不到目标：' + (ref || '（未指定）'), 'err'); return true; }
+      addSys(`${res.name} 恢复 ${n} 点生命（HP ${res.hp}/${res.max}）`);
+      renderChat(); renderSheet(); renderPartySide(); syncCombatFromChars(); renderCombat(); persist();
+      return true;
+    }
+    case 'cond': case '状态': {
+      const c = activeChar(); if (!c) { toast('请先选择角色', 'err'); return true; }
+      const tm = rest.match(/^(.*?)\s*(?:>|＞|→)\s*(.+)$/);
+      const body = (tm ? tm[1] : rest).trim();
+      const tgt = tm ? tm[2].trim() : '';
+      let k = body, off = false;
+      if (/^(解除|移除|恢复|-)/.test(body)) { off = true; k = body.replace(/^(解除|移除|恢复|-)/, '').trim(); }
+      if (!k) { openCondPicker_(); return true; }
+      const kk = CONDITIONS.map(x => x.k).find(x => x === k || x.includes(k));
+      if (!off && !kk) { toast('未知状态。可用：' + CONDITIONS.map(x => x.k).join('、'), 'err'); return true; }
+      const t = targetInfo(tgt);
+      if (!t || !t.char) { toast('找不到目标角色', 'err'); return true; }
+      if (off) { removeCond(t.char, kk || k); addSys(`✚ ${t.char.name} 解除了「${kk || k}」`); }
+      else addCond(t.char.name, kk);
+      renderChat(); renderSheet(); renderPartySide(); persist();
       return true;
     }
     case 'hp': case '血': {
@@ -1285,7 +3070,18 @@ function buildSystemPrompt() {
   const sheetText = p.length ? p.map(c => {
     const sk = c.proficient.length ? `，熟练技能：${c.proficient.join('、')}` : '';
     const ab = ABKEYS.map(k => `${AB[k].zh}${c.ab[k]}(${sign(MOD(c.ab[k]))})`).join(' ');
-    return `◆ ${c.name}｜${c.race}${c.cls} Lv.${c.level}｜AC ${c.ac}｜HP ${c.hp}/${c.maxHp}｜速度 ${c.speed}\n  ${ab}${sk}\n  装备：${(c.inv||[]).join('、') || '无'}｜金币 ${c.gold||0}${(c.spells||[]).length ? `\n  法术：${c.spells.join('、')}` : ''}`;
+    const res = charResKeys(c).filter(k => RES_DEFS[k]).map(k => `${RES_DEFS[k].name} ${c.res[k] || 0}/${c.resMax[k]}`).join('、');
+    const sl = slotList(c).map(s => `${s.pact ? '魔契 ' : ''}${s.lv} 环 ${s.cur}/${s.max}`).join('、');
+    const cond = condText(c);
+    const actFeats = featsOf(c).filter(f => f.act !== 'passive').map(f => f.name).join('、');
+    const pasFeats = featsOf(c).filter(f => f.act === 'passive').map(f => f.name).join('、');
+    return `◆ ${c.name}｜${c.race}${c.cls} Lv.${c.level}｜AC ${c.ac}｜HP ${c.hp}/${c.maxHp}｜速度 ${c.speed}\n  ${ab}${sk}\n  装备：${(c.inv || []).join('、') || '无'}｜金币 ${c.gold || 0}`
+      + (res || c.hdMax ? `\n  资源：${[res, c.hdMax ? `生命骰 ${c.hitDice}/${c.hdMax}` : ''].filter(Boolean).join(' · ')}` : '')
+      + (sl ? `\n  法术位：${sl}` : '')
+      + (actFeats ? `\n  可主动使用的特性：${actFeats}` : '')
+      + (pasFeats ? `\n  被动特性：${pasFeats}` : '')
+      + (cond ? `\n  ⚠️ 当前状态：${cond}` : '')
+      + ((c.spells || []).length ? `\n  已备法术：${c.spells.join('、')}` : '');
   }).join('\n') : '（本场暂无预设角色卡）';
 
   return `你是「艾尔德林（Aeldrin）」，一位经验老到的《龙与地下城》第五版（D&D 5e）地下城主（DM）。你正在主持一场线下跑团，玩家就在你对面。
@@ -1311,13 +3107,49 @@ ${mod ? `《${mod.title}》\n${(mod.content || '').slice(0, 9000)}` : '（无预
 【冒险者角色卡】
 ${sheetText}
 
+【掷骰权责 · 谁掷谁的骰】
+牌桌上「这次骰子谁来掷」必须分明，照下面的规矩来，不要越界：
+- **玩家角色的检定、攻击、伤害，一律由玩家自己掷**（他会点界面上的按钮）。你只负责给出 DC、指明该掷哪一项，绝不替玩家报出数字。
+- **敌人的攻击、敌人的豁免、敌方造成的伤害，由你掷**。但你**不能自己编数字**，必须输出 [攻击:] 或 [DM骰:] 指令块，让牌桌真正掷出去。掷完会有一条〔骰点 · DM 掷〕回到你面前，你据此叙述。
+  · 错误示范：「地精挥刀砍中你，造成 5 点伤害。」（数字是你编的）
+  · 正确做法：先叙述它挥刀的动作，再另起一行写 [攻击: 地精A > 莉安|+4|1d6+2]，等牌桌把结果交回给你。
+- **玩家不该看到的暗掷**（潜行者的隐蔽、被动察觉、暗门搜索）用 [暗骰:]。数值不会给玩家看，但你能看到，并据此叙述。
+- 骰子一落地就是既定事实：不要推翻重来，也不要重复索要同一次检定。
+
+【关于玩家掷骰】
+玩家的骰点会以这种形式出现在对话里：
+〔骰点 · 玩家掷〕角色名 察觉检定 d20+5 → 总值 18（对抗 DC 15 — 成功）｜他/她这么做是想：听门后有没有动静
+- **「这么做是想：……」就是玩家这次检定的意图，也就是他正在做的事。** 你必须针对这个意图来叙述后果，不要忽略它、也不要换成别的事。
+- 看到骰点后紧接着叙述它造成的具体后果：成功就给出他发现了什么；失败就说明错过了什么、或触发了什么坏结果。然后继续推进剧情。
+- 如果玩家主动掷骰而你事先并没有给出 DC，由你依据情境自行设定 DC（容易 10／中等 15／困难 20／极难 25），并在叙述里点明成败与依据。
+- 万一某条骰点确实没有意图（写着「没有说明行动意图」），**不要替他编造他做了什么**：用一两句问他「你想做什么？」，等他说明之后再叙述。
+- 已经掷过骰、已经出结果的事，不要再重复索要同一次检定；也不要因为玩家多掷了一次就改变已定的事实。
+- 玩家没有掷骰就宣布的行动，如果本身有失败风险，照常给出 [检定: ...|DC ...] 指令块要求他掷。
+
+【关于角色能力、资源与状态】
+- 角色卡上的资源（狂暴、气、法术位、圣疗池、激励骰……）由玩家在界面上自行扣除。**你不要重复扣减，也不要凭空发放**。
+- 玩家使用职业特性或施法后，你会看到一条「〔角色能力〕」记录，说明他做了什么、掷出了什么。请据此叙述结果。
+- 角色处于中毒、恐慌、目盲、束缚等状态时会自动承受检定劣势；请在叙述里体现这种不利，并在他摆脱之后提醒恢复。
+- 需要某个角色进行豁免（例如被龙息波及），用 [检定: 敏捷|DC 15] 要求他掷。
+- 战斗轮次由玩家维护先攻序列；你按顺序描述各单位做了什么即可，不要自己重排先攻，也不要替玩家决定他们这回合做什么。
+
 【输出格式 · 必须遵守】
 - 用中文，第二人称或按设定视角。
-- 需要玩家掷骰时，在叙事之后**另起一行**输出指令块，格式严格如下：
-[检定: 技能名|DC 数值]
-例如：[检定: 察觉|DC 15]  或  [检定: 力量|DC 13]
-- 只有在剧情确实造成数值变化时才使用（每条独占一行，一次最多 3 条）：
-[伤害: 8]   [治疗: 6]   [经验: 150]   [金币: 50]
+- **叙事与判定分开写**：先把场景、动作、对话写成散文；凡是涉及掷骰和数值结算的部分，不要夹在句子里，改为另起一行输出指令块，它们会单独显示在「判定与结算」区域。
+  例：「地精嘶叫着扑上来，弯刀破空而下。\n[攻击: 地精A > 莉安|+4|1d6+2]」
+- 指令块一览（需要时另起一行）：
+  [检定: 技能名|DC 数值]             玩家掷。例：[检定: 察觉|DC 15]
+  [攻击: 攻击者 > 目标|攻击加值|伤害骰]  你掷。例：[攻击: 地精A > 莉安|+4|1d6+2]
+                                     牌桌会真掷 d20+加值对抗目标 AC，命中则掷伤害并扣血
+  [DM骰: 敌人|+加值|DC 数值]          你掷。敌方豁免／检定。例：[DM骰: 地精A|+1|DC 13]
+  [DM骰: 敌人|伤害 2d6+3|目标]        你掷。单纯的敌方伤害
+  [DM骰: 天气|1d20]                  你掷。任意随机表
+  [暗骰: 角色|技能名|DC 数值]         你私下掷，玩家看不到数值。例：[暗骰: 莉安|察觉|DC 15]
+  [伤害: 8]   [治疗: 6]   [状态: 中毒]   [先攻: 地精A|12|7|13]   [经验: 150]   [金币: 50]
+  （伤害／治疗也接受骰子写法：[伤害: 莉安|2d6+3]，由牌桌掷出）
+  [判定: 一句话]                     你对这次判定的结论，例如 [判定: 重击命中，地精A 被击退]
+- 战斗时请用这些指令块让攻击真的打出去，而不是只在文字里说「他砍中了你」。
+- 只有在剧情确实造成数值变化时才使用（每条独占一行，一次最多 4 条）。
 - 不要解释指令块的含义，不要用引号包住它，不要在指令块前加「检定：」之类的说明文字。
 - 不要输出 JSON、代码块或 Markdown 表格。
 - 如果玩家只是闲聊或做无风险的动作，直接叙事即可，不要强行索要掷骰。
@@ -1325,13 +3157,48 @@ ${sheetText}
 开场时，用一段有画面感的场景描写把玩家带进故事，然后给出两三个可感知的切入点。`;
 }
 
-async function askDM() {
+let DM_BUSY = false, DM_PENDING = false;
+
+function dmReady() {
   const st = state.settings;
-  if (!st.apiBase || !st.apiKey || !st.model) {
+  return !!(st.apiBase && st.apiKey && st.model);
+}
+/* 一次掷骰结束后，把结果交给 DM 接着叙述 */
+function dmAfterRoll() {
+  if (!state.settings.narrate) return;
+  if (!dmReady()) return;                          // 没配 AI 就静默，别弹设置页打断掷骰
+  if (NET.on && NET.role === 'player') return;     // 玩家端不自己跑，由主持台统一叙述
+  askDM();
+}
+/* 把一条骰点卡片转成 DM 能读懂的文本。谁掷的要写清楚：
+   玩家掷的是「玩家的行动结果」，DM 掷的是「你替敌方掷出的结果」。 */
+function diceLine(h) {
+  const who = (h.whoName || h.note || '') ? `${h.whoName || h.note} ` : '';
+  const cmp = h.compare ? `（${h.compare}）` : '';
+  const crit = h.crit === 'nat20' ? ' · 自然 20 大成功' : h.crit === 'nat1' ? ' · 自然 1 大失败' : '';
+  if (h.by === 'dm' || h.by === 'hidden') {
+    const tail = h.by === 'hidden'
+      ? '｜这是你私下掷的，玩家不知道数值与成败，叙事时不要报出数字'
+      : '｜这是你（DM）掷出的结果，请据此叙述，不要再自己编一遍';
+    return `〔骰点 · DM 掷〕${who}${h.label || '投掷'} ${h.detail || ''} → 总值 ${h.total}${cmp}${crit}${tail}`;
+  }
+  const it = (h.intent || '').trim()
+    ? `｜他/她这么做是想：${h.intent}`
+    : '｜（这条骰点没有说明行动意图，不要凭空替他决定做了什么）';
+  const cd = h.cond ? `｜⚠️ ${h.cond}` : '';
+  return `〔骰点 · 玩家掷〕${who}${h.label || '投掷'} ${h.detail || ''} → 总值 ${h.total}${cmp}${crit}${it}${cd}`;
+}
+function dmDrain() { if (DM_PENDING) { DM_PENDING = false; askDM(); } }
+
+async function askDM() {
+  if (DM_BUSY) { DM_PENDING = true; return; }
+  const st = state.settings;
+  if (!dmReady()) {
     pushMsg({ role:'sys', text:'尚未配置 AI 接口。请前往「设置中心」填写 API 地址与密钥（也可先只用骰子与角色卡功能）', ts: Date.now() });
     openSettingsHint();
     return;
   }
+  DM_BUSY = true;
   const typingId = 'typing-' + uid();
   const log = $('#chat-log');
   const holder = document.createElement('div');
@@ -1341,12 +3208,23 @@ async function askDM() {
   $('#btn-send').disabled = true;
 
   const msgs = [{ role:'system', content: buildSystemPrompt() }];
-  const hist = state.chat.filter(m => m.role === 'dm' || m.role === 'player').slice(-24);
-  for (const h of hist) msgs.push({ role: h.role === 'dm' ? 'assistant' : 'user', content: (h.role === 'player' && h.name ? `【${h.name}】` : '') + h.text });
+  const hist = state.chat.filter(m => m.role === 'dm' || m.role === 'player' || m.role === 'dice' || m.role === 'feat').slice(-40);
+  for (const h of hist) {
+    if (h.role === 'dice') { msgs.push({ role:'user', content: diceLine(h) }); continue; }
+    if (h.role === 'feat') { msgs.push({ role:'user', content: featLine(h) }); continue; }
+    msgs.push({ role: h.role === 'dm' ? 'assistant' : 'user', content: (h.role === 'player' && h.name ? `【${h.name}】` : '') + h.text });
+  }
+  // 合并相邻同角色的消息：部分接口不接受连续同角色，或要求严格交替
+  const convo = [msgs[0]];
+  for (const m of msgs.slice(1)) {
+    const last = convo[convo.length - 1];
+    if (last.role === m.role) last.content += '\n' + m.content;
+    else convo.push({ ...m });
+  }
 
   let full = '';
   try {
-    full = await callAI(msgs, (deltaTxt, acc) => {
+    full = await callAI(convo, (deltaTxt, acc) => {
       full = acc;
       holder.querySelector('.body').innerHTML = fmtText(acc) || '<span class="typing"><i></i><i></i><i></i></span>';
       log.scrollTop = log.scrollHeight;
@@ -1357,6 +3235,7 @@ async function askDM() {
     $('#btn-send').disabled = false;
     pushMsg({ role:'sys', text:'接口调用失败：' + e.message, ts: Date.now() });
     setApiStatus('err', '请求失败：' + e.message);
+    DM_BUSY = false; dmDrain();
     return;
   }
   holder.remove();
@@ -1368,30 +3247,115 @@ async function askDM() {
   renderChat(); renderQuick();
   if (state.settings.autoSave) saveSession(true);
   persist();
+  DM_BUSY = false; dmDrain();
 }
+
+/* 把 "地精A|8" 拆成目标与数值；没有分隔符就只当成数值 */
+function splitTarget(body) {
+  const m = String(body).match(/^(.+?)\s*[|｜]\s*(.+)$/);
+  return m ? { target: m[1].trim(), rest: m[2].trim() } : { target: '', rest: String(body).trim() };
+}
+function firstNum(s) { const m = String(s).match(/-?\d+/); return m ? parseInt(m[0], 10) : null; }
 
 function parseMarkers(txt) {
   const markers = [];
-  const re = /\[(检定|伤害|治疗|经验|金币|HP)\s*[:：]\s*([^\]\n]+)\]/g;
+  const re = /\[(检定|伤害|治疗|经验|金币|HP|状态|先攻|攻击|DM骰|暗骰|判定)\s*[:：]\s*([^\]\n]+)\]/g;
   const text = String(txt).replace(re, (full, type, body) => {
     body = body.trim();
     if (type === '检定') {
       const parts = body.split(/[|｜]/);
       let name = (parts[0] || '').trim();
       let dc = null;
-      for (const p of parts.slice(1)) {
-        const mm = p.match(/(\d+)/); if (mm) dc = parseInt(mm[1], 10);
-      }
-      if (!dc) { const mm = name.match(/(\d+)/); if (mm) { dc = parseInt(mm[1], 10); name = name.replace(/\d+/g, '').replace(/[|｜]/g, '').trim(); } }
-      if (name) markers.push({ type:'check', name: name.replace(/\s+/g,''), dc });
-    } else {
-      const n = parseInt((body.match(/-?\d+/) || [0])[0], 10);
-      if (type === '伤害') markers.push({ type:'dmg', val: Math.abs(n) });
-      else if (type === '治疗') markers.push({ type:'heal', val: Math.abs(n) });
-      else if (type === '经验') markers.push({ type:'xp', val: Math.abs(n) });
-      else if (type === '金币') markers.push({ type:'gold', val: n });
-      else if (type === 'HP') markers.push({ type:'hp', val: n });
+      for (const p of parts.slice(1)) { const n = firstNum(p); if (n != null) dc = n; }
+      if (!dc) { const n = firstNum(name); if (n != null) { dc = n; name = name.replace(/\d+/g, '').replace(/[|｜]/g, '').trim(); } }
+      if (name) markers.push({ type: 'check', name: name.replace(/\s+/g, ''), dc });
+      return '';
     }
+    if (type === '先攻') {
+      const parts = body.split(/[|｜]/).map(s => s.trim());
+      const name = parts[0];
+      if (!name) return '';
+      markers.push({ type: 'init', name, init: firstNum(parts[1] || ''), hp: firstNum(parts[2] || ''), ac: firstNum(parts[3] || '') });
+      return '';
+    }
+    if (type === '攻击') {
+      const parts = body.split(/[|｜]/).map(s => s.trim());
+      const head = parts[0] || '';
+      let who = '', target = head;
+      const arrow = head.match(/^(.*?)\s*[>＞→]\s*(.+)$/);
+      if (arrow) { who = arrow[1].trim(); target = arrow[2].trim(); }
+      if (!target) return '';
+      const a = (parts[1] || '').replace(/\s/g, '');
+      const b = (parts[2] || '').trim();
+      // [攻击: 地精A > 莉安|+5|1d6+3] → 由 DM 侧真掷（推荐）
+      // [攻击: 莉安|18|7]            → DM 直接给值（旧写法，卡片会注明）
+      if (/^[+-]\d+$/.test(a) || /\d*d\d+/i.test(a)) {
+        const isDice = /\d*d\d+/i.test(b);
+        markers.push({
+          type: 'atkr', who, target,
+          bonus: parseInt(a.replace(/^\+/, ''), 10) || 0,
+          dice: isDice ? b : null,
+          val: isDice ? null : firstNum(b),
+          ac: firstNum(parts[3] || '')
+        });
+      } else {
+        markers.push({ type: 'atk', who, target, total: firstNum(parts[1] || ''), val: firstNum(parts[2] || '') });
+      }
+      return '';
+    }
+    if (type === 'DM骰') {
+      const parts = body.split(/[|｜]/).map(s => s.trim());
+      const who = parts[0] || 'DM';
+      const seg = parts.slice(1).join(' ');
+      const dcM = seg.match(/DC\s*(\d+)/i);
+      const bonusM = seg.match(/(?:^|\s)([+-]\d+)(?=\s|$)/);
+      const diceM = seg.match(/(\d*d\d+(?:[+-]\d+)?)/i);
+      const isDmg = /伤害/.test(seg);
+      markers.push({
+        type: 'dmroll', who,
+        dc: dcM ? parseInt(dcM[1], 10) : null,
+        bonus: bonusM ? parseInt(bonusM[1], 10) : 0,
+        dice: diceM ? diceM[1] : null,
+        target: isDmg ? (parts[2] || '').replace(/伤害/, '').trim() : '',
+        kind: isDmg ? 'dmg' : (dcM || bonusM ? 'save' : 'table')
+      });
+      return '';
+    }
+    if (type === '暗骰') {
+      const parts = body.split(/[|｜]/).map(s => s.trim());
+      const seg = parts.slice(1).join(' ');
+      const dcM = seg.match(/DC\s*(\d+)/i);
+      const nm = parts[1] && !/^DC/i.test(parts[1]) && !/^\d+$/.test(parts[1]) ? parts[1] : '';
+      markers.push({ type: 'hidcheck', who: parts[0] || '', name: nm, dc: dcM ? parseInt(dcM[1], 10) : null });
+      return '';
+    }
+    if (type === '判定') {
+      markers.push({ type: 'verdict', text: body.trim() });
+      return '';
+    }
+    if (type === '状态') {
+      const sp = splitTarget(body);
+      let k = sp.rest.replace(/\s+/g, '');
+      const off = /^(解除|移除|恢复|-)/.test(k);
+      k = k.replace(/^(解除|移除|恢复|-)/, '');
+      if (!k) return '';
+      markers.push({ type: 'cond', target: sp.target, name: k, off });
+      return '';
+    }
+    const sp = splitTarget(body);
+    let n = firstNum(sp.rest);
+    let rolled = null;
+    // 伤害/治疗也接受骰子写法：[伤害: 莉安|2d6+3] —— 由系统真掷，不让 AI 自己算
+    if ((type === '伤害' || type === '治疗') && /\d*d\d+/i.test(sp.rest)) {
+      const dr = rollExpr(sp.rest.replace(/[^\dd+\-*]/gi, ''));
+      if (dr) { n = Math.abs(dr.total); rolled = exprLabel(dr); }
+    }
+    if (n == null) return '';
+    if (type === '伤害') markers.push({ type: 'dmg', val: Math.abs(n), target: sp.target, rolled });
+    else if (type === '治疗') markers.push({ type: 'heal', val: Math.abs(n), target: sp.target, rolled });
+    else if (type === '经验') markers.push({ type: 'xp', val: Math.abs(n), target: sp.target });
+    else if (type === '金币') markers.push({ type: 'gold', val: n, target: sp.target });
+    else if (type === 'HP') markers.push({ type: 'hp', val: n, target: sp.target });
     return '';
   }).replace(/\n{3,}/g, '\n\n').trim();
   return { text, markers };
@@ -2198,6 +4162,7 @@ function renderSettings() {
   setSeg('#seg-theme', st.theme); setSeg('#seg-font', st.font); setSeg('#seg-fs', st.fontSize);
   $('#set-anim').checked = st.anim; $('#set-texture').checked = st.texture;
   $('#set-autosave').checked = st.autoSave; $('#set-immersive').checked = st.immersive;
+  $('#set-narrate').checked = st.narrate !== false;
 
   recountSpace();
 }
@@ -2268,7 +4233,9 @@ function bind() {
   $('#btn-save').addEventListener('click', () => saveSession());
   $('#btn-clear-chat').addEventListener('click', () => { if (confirm('清空当前桌面对话？（不影响存档）')) { state.chat = []; persist(); renderChat(); } });
   $('#btn-roll-panel').addEventListener('click', openDicePanel);
+  $('#btn-check-panel').addEventListener('click', openCheckPanel);
   $('#btn-combat').addEventListener('click', openCombatPanel);
+  $('#btn-ability').addEventListener('click', openAbilityPanel);
 
   // 准备
   $('#module-drop').addEventListener('click', () => $('#module-file').click());
@@ -2349,7 +4316,7 @@ function bind() {
   bindSeg('#seg-theme', v => { state.settings.theme = v; });
   bindSeg('#seg-font', v => { state.settings.font = v; });
   bindSeg('#seg-fs', v => { state.settings.fontSize = v; });
-  ['anim','texture','autoSave','immersive'].forEach(k => {
+  ['anim','texture','autoSave','immersive','narrate'].forEach(k => {
     const id = '#set-' + (k === 'autoSave' ? 'autosave' : k);
     $(id).addEventListener('change', e => { state.settings[k] = e.target.checked; persist(); applySettings(); });
   });
@@ -2495,43 +4462,37 @@ function openDicePanel() {
 window.doRoll = doRoll;
 
 function openCombatPanel() {
-  const cb = state.combat;
+  const cb = state.combat || {};
   openModal({
-    title: '先攻序列', 
-    body: `${cb.on ? `<div class="muted" style="margin-bottom:12px">进行中 · 第 ${cb.round} 轮</div>` : '<p class="muted" style="margin-bottom:12px">尚未开始战斗。</p>'}
-      <button class="btn" onclick="startCombat_()">⚔️ 掷先攻并开始</button>
-      <button class="btn ghost" onclick="addEnemy_()" style="margin-left:8px">+ 添加敌人</button>
-      <div style="margin-top:16px" id="cb-manage"></div>`,
-    footer: `${cb.on ? `<button class="btn ghost" onclick="nextTurn_()">下一回合</button><button class="btn danger" onclick="endCombat_()">结束战斗</button>` : '<button class="btn ghost" onclick="closeModal()">关闭</button>'}
-      <button class="btn" onclick="closeModal()">关闭</button>`
+    title: '⚔️ 战斗控制台', wide: true,
+    body: `      <div class="cb-top">
+        <button class="btn" onclick="startCombat_()">⚔️ 掷先攻并开始</button>
+        <button class="btn ghost" onclick="openAddUnit_()">＋ 添加敌人</button>
+        <button class="btn ghost" onclick="closeModal();setTimeout(openDMPanel,60)">🜂 DM 掷骰台</button>
+        ${cb.on ? `<button class="btn ghost" onclick="nextTurn_()">▸ 下一回合</button><button class="btn danger" onclick="endCombat_()">结束战斗</button>` : ''}
+      </div>
+      ${cb.on ? `<div class="muted" style="margin:12px 0 4px">进行中 · 第 <b>${cb.round}</b> 轮 · 轮到 <b>${esc(((cb.order || [])[cb.turn] || {}).name || '—')}</b> · 敌人的攻击与豁免由 DM 掷</div>`
+              : '<p class="muted" style="margin:12px 0 4px">先加几个敌人，再掷先攻。这里改的数值会立刻同步到桌面与全桌。</p>'}
+      <div class="cbc-head"><span>先攻</span><span>名称</span><span>AC</span><span>HP</span><span></span></div>
+      <div class="cbconsole" id="cbc-rows">${cbcRowsHTML()}</div>
+      <p class="muted" style="font-size:11px;margin-top:10px">提示：在输入框里也可以用 <code>.atk 长剑 > 地精A</code> 直接攻击某个目标，命中后自动扣它的血。</p>`,
+    footer: `<button class="btn ghost" onclick="closeModal()">关闭</button>`
   });
 }
+window.openCombatPanel = openCombatPanel;
 window.startCombat_ = () => {
-  const order = party().map(c => ({ id: c.id, name: c.name, init: D(20) + MOD(c.ab.dex), hp: c.hp, maxHp: c.maxHp, enemy:false }));
-  (state.combat.enemies || []).forEach(e => order.push(e));
-  order.sort((a,b) => b.init - a.init);
-  state.combat = { on:true, round:1, order, turn:0, enemies: state.combat.enemies || [] };
+  const prev = state.combat || {};
+  const enemies = (prev.order || []).filter(o => o.enemy);
+  const order = party().map(c => ({ id: c.id, name: c.name, init: D(20) + MOD(c.ab.dex), hp: c.hp, maxHp: c.maxHp, ac: c.ac, enemy: false }));
+  enemies.forEach(e => { if (!order.some(o => o.id === e.id)) order.push(e); });
+  order.sort((a, b) => b.init - a.init);
+  state.combat = { on: true, round: 1, order, turn: 0, enemies };
   persist(); closeModal(); renderCombat(); renderTable(); netPushCombat();
   addSys('⚔️ 战斗开始 · 先攻顺序：' + order.map(o => `${o.name}(${o.init})`).join(' → '));
   renderChat();
   toast('先攻已排定');
 };
-window.addEnemy_ = () => {
-  const name = prompt('敌人名称（可加数量，如：地精 x3）', '地精');
-  if (!name) return;
-  const mm = name.match(/x\s*(\d+)/i);
-  const n = mm ? parseInt(mm[1],10) : 1;
-  const base = name.replace(/x\s*\d+/i, '').trim() || '敌人';
-  state.combat.enemies = state.combat.enemies || [];
-  for (let i = 0; i < n; i++) {
-    const hp = 7 + D(6);
-    const e = { id: uid(), name: n > 1 ? `${base} #${i+1}` : base, init: D(20) + 1, hp, maxHp: hp, enemy: true };
-    state.combat.enemies.push(e);
-    if (state.combat.on) { state.combat.order.push(e); state.combat.order.sort((a,b)=>b.init-a.init); }
-  }
-  persist(); closeModal(); renderCombat(); renderTable(); netPushCombat();
-  toast('已加入 ' + n + ' 个敌人');
-};
+window.addEnemy_ = () => openAddUnit_();
 window.nextTurn_ = () => {
   const cb = state.combat; if (!cb.on) return;
   cb.turn++;
@@ -2544,6 +4505,94 @@ window.endCombat_ = () => {
   state.combat = { on:false, round:1, order:[], turn:0, enemies: state.combat.enemies || [] };
   persist(); closeModal(); renderCombat(); renderTable(); netPushCombat();
   addSys('战斗结束'); renderChat();
+};
+
+/* ── DM 掷骰台：敌人与「世界」那一侧的骰子 ── */
+
+let DMP = { enemies: [] };
+
+function openDMPanel() {
+  const enemies = combatUnits().filter(u => u.enemy);
+  // 没走「仪式准备」点过名时，退回本地角色卡，保证单人模式也能选到目标
+  let pcs = party();
+  if (!pcs.length) pcs = (state.chars || []).filter(Boolean);
+  DMP.enemies = enemies.map(e => e.name);
+  openModal({
+    title: '🜂 DM 掷骰台 · 敌方与世界的骰子', wide: true,
+    body: `<p class="muted" style="line-height:1.75;margin-bottom:6px">
+        这里掷的是<b>敌人和世界</b>的骰子；你自己的检定、攻击、伤害请在「🎯 我要行动」里掷。<br>
+        DM 掷出的结果会带着 <b>🜂 DM 掷</b> 的标记出现在桌面上，并交给 DM 接着叙述。</p>
+      <div class="vl" style="margin-top:14px">敌人攻击</div>
+      ${enemies.length ? enemies.map((e, i) => {
+        const m = guessMob(e.name) || {};
+        return `<div class="dmp-row">
+          <b>${esc(e.name)}</b>
+          <span class="muted">AC ${e.ac || 13} · ${e.hp}/${e.maxHp} HP${m.atk ? ` · ${esc(m.atk)} ${m.ab >= 0 ? '+' : ''}${m.ab} / ${esc(m.dmg)}` : ''}</span>
+          <select class="dmp-sel" id="dmp-t-${i}">
+            ${pcs.map(c => `<option value="${esc(c.name)}">${esc(c.name)}（AC ${c.ac} · ${c.hp}/${c.maxHp}）</option>`).join('')}
+          </select>
+          <button class="btn sm" onclick="dmAtkSel_(${i})">⚔ 掷攻击</button>
+        </div>`;
+      }).join('') : '<p class="muted" style="font-size:12px">先攻序列里还没有敌人 —— 去「⚔️ 战斗」加几个。</p>'}
+
+      <div class="vl" style="margin-top:16px">敌方豁免 / 检定</div>
+      <div class="row gap" style="flex-wrap:wrap;align-items:center">
+        <input id="dmp-who" placeholder="谁（如 地精A）" style="flex:0 0 150px">
+        <input id="dmp-bonus" placeholder="加值 +1" style="flex:0 0 100px">
+        <input id="dmp-dc" type="number" placeholder="DC" style="flex:0 0 90px">
+        <button class="btn sm" onclick="dmSave_()">🜂 掷豁免</button>
+      </div>
+
+      <div class="vl" style="margin-top:16px">随机表 / 任意投掷</div>
+      <div class="row gap" style="flex-wrap:wrap;align-items:center">
+        <input id="dmp-label" placeholder="叫什么（如 天气表）" style="flex:0 0 150px">
+        <input id="dmp-expr" value="1d20" style="flex:0 0 110px">
+        <button class="btn sm" onclick="dmTable_()">🎲 掷出</button>
+      </div>
+
+      <div class="vl" style="margin-top:16px">暗骰 · 玩家看不到数值</div>
+      <div class="row gap" style="flex-wrap:wrap;align-items:center">
+        <select class="dmp-sel" id="dmp-hwho" style="flex:0 0 150px">
+          ${pcs.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('')}
+        </select>
+        <input id="dmp-hskill" placeholder="察觉" value="察觉" style="flex:0 0 110px">
+        <input id="dmp-hdc" type="number" placeholder="DC" style="flex:0 0 90px">
+        <button class="btn sm" onclick="dmHidden_()">🌑 暗掷</button>
+      </div>`,
+    footer: `<button class="btn ghost" onclick="closeModal()">关闭</button>`
+  });
+}
+window.openDMPanel = openDMPanel;
+window.openDMPanel_ = openDMPanel;
+
+window.dmAtkSel_ = i => {
+  const who = DMP.enemies[i];
+  const sel = $('#dmp-t-' + i);
+  const target = sel ? sel.value : '';
+  if (!who || !target) { toast('没有可攻击的目标', 'err'); return; }
+  closeModal();
+  mobAttack(who, target);
+};
+window.dmSave_ = () => {
+  const who = (($('#dmp-who') || {}).value || '').trim();
+  if (!who) { toast('请填写要掷豁免的是谁', 'err'); return; }
+  const bonus = parseInt(((($('#dmp-bonus') || {}).value || '0').replace(/[^\-0-9]/g, '')), 10) || 0;
+  const dcRaw = parseInt((($('#dmp-dc') || {}).value || ''), 10);
+  closeModal();
+  dmRoll({ who, kind: 'save', bonus, dc: isNaN(dcRaw) ? null : dcRaw });
+};
+window.dmTable_ = () => {
+  const lb = (($('#dmp-label') || {}).value || '').trim();
+  const ex = (($('#dmp-expr') || {}).value || '').trim() || '1d20';
+  closeModal();
+  dmRoll({ who: lb || 'DM', kind: 'table', dice: ex, label: (lb || 'DM') + ' · 投掷' });
+};
+window.dmHidden_ = () => {
+  const who = ($('#dmp-hwho') || {}).value || '';
+  const sk = (($('#dmp-hskill') || {}).value || '').trim() || '察觉';
+  const dcRaw = parseInt((($('#dmp-hdc') || {}).value || ''), 10);
+  closeModal();
+  hiddenCheck(who, sk, isNaN(dcRaw) ? null : dcRaw);
 };
 
 /* ─────────────── 21. 诗篇 · 从存档创作 ─────────────── */
@@ -2859,7 +4908,12 @@ function netHostRecv(env) {
       if (!env.d || !env.d.msg) break;
       netApplyMsg(env.d.msg, true);
       netBroadcast('msg', { msg: env.d.msg });
-      if (env.d.msg.role === 'player') { netUpdateRosterFromMsg(env.d.msg); askDM(); }
+      if (env.d.msg.role === 'player') {
+        netUpdateRosterFromMsg(env.d.msg);
+        if (!env.d.msg.paired) askDM();     // paired = 这条发言只是某次检定的意图，随后那条骰点会带着它一起问
+      }
+      // 玩家自己掷了骰（主动检定／攻击）→ 由主持台带着这个结果去问 DM
+      else if (env.d.msg.role === 'dice') { dmAfterRoll(); }
       break;
     }
     case 'sheet': {
@@ -2984,6 +5038,13 @@ function netPushLocal(m) {
 }
 
 /* 我的角色卡有变化 → 上报（自动比对，避免无谓流量） */
+/* 把某张角色卡推给全桌（主持台用：替玩家扣血／加状态后要同步回他本人） */
+function netPushCharById(id) {
+  if (!NET.on) return;
+  const c = getChar(id); if (!c) return;
+  if (NET.role === 'host') netBroadcast('sheet', { char: JSON.parse(JSON.stringify(c)) });
+  else if (id === NET.charId) netSyncMyChar();
+}
 function netSyncMyChar() {
   if (!NET.on) return;
   const c = NET.role === 'player' ? getChar(NET.charId) : activeChar();
@@ -3278,7 +5339,16 @@ window.AELDRIN = {
   RACES, CLASSES, BACKGROUNDS, ALIGNMENTS, SKILLS, AB,
   rollExpr, MOD, PROF, sign, calcMaxHp, hpBreakdown, syncDerived, applyRacial, suggestAC,
   newChar, adoptChar, deriveBaseFromFinal, parseMarkers, doRoll, doCheck, saveSession, persist, setView,
-  launchSession, ensureCampaign, buildSystemPrompt
+  launchSession, ensureCampaign, buildSystemPrompt,
+  declareCheck, openCheckPanel, dmReady, dmAfterRoll, diceLine,
+  openIntentModal, intentPresets, lastUndeclaredAction,
+  CLASS_FEATURES, RES_DEFS, CONDITIONS, COND_MAP, SPELL_LIB, WEAPONS, MONSTERS, KI_DIE, SNEAK_DIE,
+  restSummary, useFeature, doAttack, castSpell, applyHpChange, targetInfo, addUnit, targetAc,
+  restShort, restLong, spendHitDie, syncResources, syncSpellSlots, resList, slotList, slotTotal,
+  charResKeys, featsOf, casterKind, condDis, addCond, removeCond, abilityPanelHTML, openAbilityPanel,
+  openCombatPanel, openSpellbook, openCheckPanel,
+  dmRoll, mobAttack, hiddenCheck, guessMob, ROLL_BY, openDMPanel, verdictBlock, isVerdictSys,
+  revealRoll_: window.revealRoll_
 };
 
 })();
